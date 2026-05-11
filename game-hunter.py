@@ -27,13 +27,14 @@ ATTACK_DAMAGE = 18
 ATTACK_BOX_LENGTH = 84
 ATTACK_BOX_WIDTH = 56
 PUNCH_ANIMATION_TIME = 0.14
+SPECIAL_ATTACK_COOLDOWN = 0.9
 BASE_PLAYER_MAX_HEALTH = 120
 BASE_PLAYER_SPEED = 5
 BASE_PLAYER_DAMAGE = 18
 BASE_PLAYER_DEFENSE = 0
 MALAISE_MAX = 100.0
-MALAISE_GAIN_RATE = 0.7
-MALAISE_RECOVERY_RATE = 0.45
+MALAISE_GAIN_RATE = 1.0
+MALAISE_RECOVERY_RATE = 0.28
 MALAISE_DAMAGE_INTERVAL = 1.6
 MALAISE_KILL_RECOVERY = 10.0
 
@@ -135,6 +136,7 @@ class Player(Entity):
         self.money = 0
         self.floor = 1
         self.outfits: list[Outfit] = []
+        self.unlocked_attacks: set[str] = {"basic"}
         self.max_health = self.base_max_health
         self.health = self.max_health
 
@@ -198,19 +200,16 @@ class GameView(arcade.View):
         self.pressed_keys: set[int] = set()
         self.attack_flash = 0.0
         self.punch_timer = 0.0
+        self.special_attack_timer = 0.0
         self.damage_flash = 0.0
         self.screen_shake = 0.0
         self.current_message = "Press ENTER to start the climb."
         self.reward_options: list[Outfit] = []
         self.reward_bounds: list[tuple[float, float, float, float]] = []
-        self.shop_options: list[tuple[str, str, int]] = [
-            ("heal", "Repair kit", 8),
-            ("damage", "Tool upgrade", 12),
-            ("speed", "Quickstep boots", 12),
-            ("defense", "Reinforced lining", 12),
-        ]
+        self.shop_options: list[tuple[str, str, int, str]] = []
         self.shop_bounds: list[tuple[float, float, float, float]] = []
         self.shop_message = "Spend money with 1-4, then press SPACE."
+        self.shop_open_timer = 0.0
 
     def on_show_view(self) -> None:
         arcade.set_background_color(BACKGROUND)
@@ -223,10 +222,10 @@ class GameView(arcade.View):
             self.boss.y = SCREEN_HEIGHT - 160
             self.current_message = "The CEO appears."
             return
-        self.enemies = [
-            Enemy(random.randint(240, SCREEN_WIDTH - 80), random.randint(120, SCREEN_HEIGHT - 120), self.player.floor)
-            for _ in range(2 + self.player.floor)
-        ]
+        self.enemies = []
+        for _ in range(2 + self.player.floor):
+            x, y = self.random_enemy_spawn_point()
+            self.enemies.append(Enemy(x, y, self.player.floor))
         self.state = "combat"
 
     def make_reward_options(self) -> list[Outfit]:
@@ -245,8 +244,23 @@ class GameView(arcade.View):
 
     def open_shop(self) -> None:
         self.state = "shop"
+        self.refresh_shop_options()
         self.current_message = self.shop_message
         self.pressed_keys.clear()
+        self.shop_open_timer = 0.0
+
+    def random_enemy_spawn_point(self) -> tuple[float, float]:
+        min_distance = 180
+        for _ in range(40):
+            x = random.randint(80, SCREEN_WIDTH - 80)
+            y = random.randint(80, SCREEN_HEIGHT - 80)
+            if math.hypot(x - self.player.x, y - self.player.y) >= min_distance:
+                return x, y
+        angle = random.random() * math.tau
+        return (
+            max(80, min(SCREEN_WIDTH - 80, self.player.x + math.cos(angle) * min_distance)),
+            max(80, min(SCREEN_HEIGHT - 80, self.player.y + math.sin(angle) * min_distance)),
+        )
 
     def on_key_press(self, key: int, modifiers: int) -> None:
         self.pressed_keys.add(key)
@@ -262,15 +276,19 @@ class GameView(arcade.View):
 
         if self.state == "shop":
             if key in {arcade.key.KEY_1, arcade.key.NUM_1}:
-                self.buy_shop_item("heal")
+                self.buy_shop_item(self.shop_options[0][0])
             elif key in {arcade.key.KEY_2, arcade.key.NUM_2}:
-                self.buy_shop_item("damage")
+                self.buy_shop_item(self.shop_options[1][0])
             elif key in {arcade.key.KEY_3, arcade.key.NUM_3}:
-                self.buy_shop_item("speed")
+                self.buy_shop_item(self.shop_options[2][0])
             elif key in {arcade.key.KEY_4, arcade.key.NUM_4}:
-                self.buy_shop_item("defense")
+                self.buy_shop_item(self.shop_options[3][0])
             elif key in {arcade.key.SPACE, arcade.key.ENTER, arcade.key.RETURN}:
-                self.advance_after_shop()
+                if self.shop_open_timer >= 3.0:
+                    self.advance_after_shop()
+                else:
+                    remaining = max(0.0, 3.0 - self.shop_open_timer)
+                    self.current_message = f"Shop just opened. Wait {remaining:.1f}s to leave."
                 self.pressed_keys.discard(arcade.key.SPACE)
             return
 
@@ -290,6 +308,8 @@ class GameView(arcade.View):
         if self.state in {"combat", "boss"} and key == arcade.key.SPACE:
             if self.player.attack_timer <= 0:
                 self.attack()
+        if self.state in {"combat", "boss"} and key in {arcade.key.Q, arcade.key.E}:
+            self.special_attack(key)
 
     def on_key_release(self, key: int, modifiers: int) -> None:
         self.pressed_keys.discard(key)
@@ -325,6 +345,37 @@ class GameView(arcade.View):
             self.screen_shake = 0.08
         else:
             self.current_message = "No target in range. Move closer."
+
+    def special_attack(self, key: int) -> None:
+        if self.special_attack_timer > 0:
+            return
+        if key == arcade.key.Q and "sweep" in self.player.unlocked_attacks:
+            self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.current_message = "Sweep attack!"
+            targets = self.enemies if self.state == "combat" else [self.boss]
+            hit = False
+            for target in list(targets):
+                dx = abs(target.x - self.player.x)
+                dy = abs(target.y - self.player.y)
+                if dx <= 96 and dy <= 72:
+                    self.damage_target(target, self.player.effective_damage + 6)
+                    hit = True
+            if hit:
+                self.screen_shake = 0.1
+            return
+        if key == arcade.key.E and "lunge" in self.player.unlocked_attacks:
+            self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.current_message = "Lunge strike!"
+            targets = self.enemies if self.state == "combat" else [self.boss]
+            hit = False
+            for target in list(targets):
+                line_dx = target.x - self.player.x
+                line_dy = target.y - self.player.y
+                if math.hypot(line_dx, line_dy) <= 130:
+                    self.damage_target(target, self.player.effective_damage + 10)
+                    hit = True
+            if hit:
+                self.screen_shake = 0.1
 
     def attack_rect(self) -> tuple[float, float, float, float]:
         length = ATTACK_BOX_LENGTH
@@ -396,6 +447,8 @@ class GameView(arcade.View):
 
         if self.player.attack_timer > 0:
             self.player.attack_timer -= delta_time
+        if self.special_attack_timer > 0:
+            self.special_attack_timer -= delta_time
         if self.player.invuln_timer > 0:
             self.player.invuln_timer -= delta_time
         if self.attack_flash > 0:
@@ -406,6 +459,8 @@ class GameView(arcade.View):
             self.damage_flash -= delta_time
         if self.screen_shake > 0:
             self.screen_shake -= delta_time
+        if self.state == "shop":
+            self.shop_open_timer += delta_time
         self.update_microplastics(delta_time)
 
         dx = dy = 0
@@ -444,6 +499,9 @@ class GameView(arcade.View):
                 self.open_shop()
 
     def update_microplastics(self, delta_time: float) -> None:
+        if self.state == "shop":
+            self.player.microplastics_tick = 0.0
+            return
         sustainability = self.player.sustainability
         if sustainability < 0:
             self.player.microplastics += (-sustainability) * MALAISE_GAIN_RATE * 1.4 * delta_time
@@ -476,7 +534,7 @@ class GameView(arcade.View):
             self.hit_player(self.boss.touch_damage)
 
     def buy_shop_item(self, item: str) -> None:
-        costs = {"heal": 8, "damage": 12, "speed": 12, "defense": 12}
+        costs = {"heal": 8, "damage": 12, "speed": 12, "defense": 12, "unlock_sweep": 18, "unlock_lunge": 24}
         if self.player.money < costs[item]:
             self.current_message = "Not enough money."
             return
@@ -493,7 +551,31 @@ class GameView(arcade.View):
         elif item == "defense":
             self.player.defense += 1
             self.current_message = "Defense upgraded."
+        elif item == "unlock_sweep":
+            self.player.unlocked_attacks.add("sweep")
+            self.current_message = "Unlocked Sweep Attack (Q)."
+        elif item == "unlock_lunge":
+            self.player.unlocked_attacks.add("lunge")
+            self.current_message = "Unlocked Lunge Strike (E)."
         self.player.money = max(0, self.player.money)
+
+    def refresh_shop_options(self) -> None:
+        options: list[tuple[str, str, int, str]] = [
+            ("heal", "Repair kit", 8, "common"),
+            ("damage", "Tool upgrade", 12, "common"),
+        ]
+        third = ("speed", "Quickstep boots", 12, "common")
+        fourth = ("defense", "Reinforced lining", 12, "common")
+        if self.player.floor >= 3 and "sweep" not in self.player.unlocked_attacks:
+            third = ("unlock_sweep", "Sweep emitter", 18, "rare")
+        elif self.player.floor >= 7 and random.random() < 0.5:
+            third = ("damage", "Prototype edge", 20, "rare")
+        if self.player.floor >= 5 and "lunge" not in self.player.unlocked_attacks:
+            fourth = ("unlock_lunge", "Lunge drive", 24, "rare")
+        elif self.player.floor >= 9 and random.random() < 0.4:
+            fourth = ("speed", "Slipstream weave", 20, "rare")
+        options.extend([third, fourth])
+        self.shop_options = options
 
     def advance_after_shop(self) -> None:
         self.player.floor += 1
@@ -677,6 +759,10 @@ class GameView(arcade.View):
         arcade.draw_text(objective, SCREEN_WIDTH - 232, SCREEN_HEIGHT - 82, MUTED, 14)
         arcade.draw_text("Move: arrows", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 108, MUTED, 12)
         arcade.draw_text("Attack: space", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 126, MUTED, 12)
+        if "sweep" in self.player.unlocked_attacks:
+            arcade.draw_text("Sweep: Q", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 144, MUTED, 12)
+        if "lunge" in self.player.unlocked_attacks:
+            arcade.draw_text("Lunge: E", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 162, MUTED, 12)
         if self.state == "shop":
             arcade.draw_text("1-4 or click items", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 154, MUTED, 12)
             arcade.draw_text("SPACE or ENTER to continue", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 172, MUTED, 12)
@@ -700,7 +786,7 @@ class GameView(arcade.View):
         arcade.draw_text("Buy upgrades with money, or press SPACE when finished", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 94, MUTED, 14, anchor_x="center")
         arcade.draw_text("ENTER also works if SPACE feels ignored", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 72, MUTED, 11, anchor_x="center")
         self.shop_bounds = []
-        for idx, (item, label, cost) in enumerate(self.shop_options):
+        for idx, (item, label, cost, rarity) in enumerate(self.shop_options):
             y = SCREEN_HEIGHT / 2 + 38 - idx * 72
             left = SCREEN_WIDTH / 2 - 330
             bottom = y - 28
@@ -711,7 +797,8 @@ class GameView(arcade.View):
             fill = arcade.color.DARK_GREEN if affordable else arcade.color.DARK_RED
             arcade.draw_lbwh_rectangle_filled(left, bottom, 660, 56, fill)
             arcade.draw_lbwh_rectangle_outline(left, bottom, 660, 56, arcade.color.WHITE, 2)
-            arcade.draw_text(f"{idx + 1}. {label}", left + 18, y + 8, TEXT, 16)
+            title = f"{idx + 1}. {label} [{rarity}]"
+            arcade.draw_text(title, left + 18, y + 8, TEXT, 16)
             arcade.draw_text(f"${cost}", left + 560, y + 8, TEXT, 16)
             arcade.draw_text(item, left + 18, y - 14, MUTED, 11)
 
