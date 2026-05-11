@@ -1,11 +1,11 @@
 """Hunter & Ollin serious game MVP.
 
 This version turns the design doc into a small playable vertical slice:
-- Move through the building
+- Move through the build
 - Fight enemies with basic attacks
 - Pick outfits after each floor
 - Balance power vs sustainability tradeoffs
-- Defeat the CEO boss to win
+- Defeat the CEO boss, shop, and keep climbing forever
 """
 
 from __future__ import annotations
@@ -24,10 +24,18 @@ PLAYER_SPEED = 5
 ATTACK_COOLDOWN = 0.25
 ATTACK_RANGE = 70
 ATTACK_DAMAGE = 18
+ATTACK_BOX_LENGTH = 84
+ATTACK_BOX_WIDTH = 56
+PUNCH_ANIMATION_TIME = 0.14
 BASE_PLAYER_MAX_HEALTH = 120
 BASE_PLAYER_SPEED = 5
 BASE_PLAYER_DAMAGE = 18
 BASE_PLAYER_DEFENSE = 0
+MALAISE_MAX = 100.0
+MALAISE_GAIN_RATE = 0.7
+MALAISE_RECOVERY_RATE = 0.45
+MALAISE_DAMAGE_INTERVAL = 1.6
+MALAISE_KILL_RECOVERY = 10.0
 
 BACKGROUND = arcade.color.DARK_SLATE_GRAY
 PANEL = arcade.color.DARK_BROWN
@@ -103,13 +111,12 @@ class Entity:
     def center_y(self) -> float:
         return self.y
 
-    def rect(self) -> arcade.Rect:
-        return arcade.Rect(
-            self.x - self.width / 2,
-            self.y - self.height / 2,
-            self.width,
-            self.height,
-        )
+    def rect(self, padding_x: float = 0.0, padding_y: float = 0.0) -> tuple[float, float, float, float]:
+        left = self.x - self.width / 2 + padding_x
+        right = self.x + self.width / 2 - padding_x
+        bottom = self.y - self.height / 2 + padding_y
+        top = self.y + self.height / 2 - padding_y
+        return left, right, bottom, top
 
 
 class Player(Entity):
@@ -121,6 +128,10 @@ class Player(Entity):
         self.defense = BASE_PLAYER_DEFENSE
         self.attack_timer = 0.0
         self.invuln_timer = 0.0
+        self.facing_x = 1.0
+        self.facing_y = 0.0
+        self.microplastics = 0.0
+        self.microplastics_tick = 0.0
         self.money = 0
         self.floor = 1
         self.outfits: list[Outfit] = []
@@ -138,6 +149,18 @@ class Player(Entity):
     @property
     def sustainability(self) -> int:
         return sum(o.sustainability for o in self.outfits)
+
+    @property
+    def microplastics_stage(self) -> int:
+        return min(3, int(self.microplastics // 25))
+
+    @property
+    def effective_damage(self) -> int:
+        return max(1, self.damage - self.microplastics_stage * 2)
+
+    @property
+    def effective_speed(self) -> int:
+        return max(2, self.speed - self.microplastics_stage)
 
     def refresh_stats(self) -> None:
         bonus_health = sum(o.max_health_bonus for o in self.outfits)
@@ -174,17 +197,26 @@ class GameView(arcade.View):
         self.boss = Boss()
         self.pressed_keys: set[int] = set()
         self.attack_flash = 0.0
+        self.punch_timer = 0.0
         self.damage_flash = 0.0
         self.screen_shake = 0.0
         self.current_message = "Press ENTER to start the climb."
         self.reward_options: list[Outfit] = []
         self.reward_bounds: list[tuple[float, float, float, float]] = []
+        self.shop_options: list[tuple[str, str, int]] = [
+            ("heal", "Repair kit", 8),
+            ("damage", "Tool upgrade", 12),
+            ("speed", "Quickstep boots", 12),
+            ("defense", "Reinforced lining", 12),
+        ]
+        self.shop_bounds: list[tuple[float, float, float, float]] = []
+        self.shop_message = "Spend money with 1-4, then press SPACE."
 
     def on_show_view(self) -> None:
         arcade.set_background_color(BACKGROUND)
 
     def spawn_floor(self) -> None:
-        if self.player.floor >= 4:
+        if self.player.floor % 4 == 0:
             self.state = "boss"
             self.boss = Boss()
             self.boss.x = SCREEN_WIDTH / 2
@@ -211,6 +243,11 @@ class GameView(arcade.View):
     def current_outfit_options(self) -> list[Outfit]:
         return self.make_reward_options()
 
+    def open_shop(self) -> None:
+        self.state = "shop"
+        self.current_message = self.shop_message
+        self.pressed_keys.clear()
+
     def on_key_press(self, key: int, modifiers: int) -> None:
         self.pressed_keys.add(key)
         if self.state == "intro" and key == arcade.key.ENTER:
@@ -219,17 +256,31 @@ class GameView(arcade.View):
             self.current_message = "The climb begins. Clear the floor."
             return
 
-        if self.state in {"game_over", "victory"} and key == arcade.key.R:
+        if self.state == "game_over" and key == arcade.key.R:
             self.__init__()
+            return
+
+        if self.state == "shop":
+            if key in {arcade.key.KEY_1, arcade.key.NUM_1}:
+                self.buy_shop_item("heal")
+            elif key in {arcade.key.KEY_2, arcade.key.NUM_2}:
+                self.buy_shop_item("damage")
+            elif key in {arcade.key.KEY_3, arcade.key.NUM_3}:
+                self.buy_shop_item("speed")
+            elif key in {arcade.key.KEY_4, arcade.key.NUM_4}:
+                self.buy_shop_item("defense")
+            elif key in {arcade.key.SPACE, arcade.key.ENTER, arcade.key.RETURN}:
+                self.advance_after_shop()
+                self.pressed_keys.discard(arcade.key.SPACE)
             return
 
         if self.state == "reward":
             choice = None
-            if key in {arcade.key.ONE, arcade.key.KEY_1, arcade.key.NUM_1}:
+            if key in {arcade.key.KEY_1, arcade.key.NUM_1}:
                 choice = 0
-            elif key in {arcade.key.TWO, arcade.key.KEY_2, arcade.key.NUM_2}:
+            elif key in {arcade.key.KEY_2, arcade.key.NUM_2}:
                 choice = 1
-            elif key in {arcade.key.THREE, arcade.key.KEY_3, arcade.key.NUM_3}:
+            elif key in {arcade.key.KEY_3, arcade.key.NUM_3}:
                 choice = 2
             if choice is not None and choice < len(self.reward_options):
                 self.apply_outfit(self.reward_options[choice])
@@ -245,6 +296,12 @@ class GameView(arcade.View):
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int) -> None:
         if self.state != "reward" or button != arcade.MOUSE_BUTTON_LEFT:
+            if self.state == "shop" and button == arcade.MOUSE_BUTTON_LEFT:
+                for idx, bounds in enumerate(self.shop_bounds):
+                    left, right, bottom, top = bounds
+                    if left <= x <= right and bottom <= y <= top:
+                        self.buy_shop_item(self.shop_options[idx][0])
+                        return
             return
         for idx, bounds in enumerate(self.reward_bounds):
             left, right, bottom, top = bounds
@@ -256,27 +313,85 @@ class GameView(arcade.View):
     def attack(self) -> None:
         self.player.attack_timer = ATTACK_COOLDOWN
         self.attack_flash = 0.12
+        self.punch_timer = PUNCH_ANIMATION_TIME
         targets = self.enemies if self.state == "combat" else [self.boss]
         hit = False
+        attack_rect = self.attack_rect()
         for target in list(targets):
-            if self.distance_to(target) <= ATTACK_RANGE:
-                self.damage_target(target, self.player.damage)
+            if self.rects_intersect(attack_rect, self.entity_hitbox(target, 0), padding=4):
+                self.damage_target(target, self.player.effective_damage)
                 hit = True
         if hit:
             self.screen_shake = 0.08
         else:
             self.current_message = "No target in range. Move closer."
 
-    def distance_to(self, target: Entity) -> float:
-        return math.hypot(self.player.x - target.x, self.player.y - target.y)
+    def attack_rect(self) -> tuple[float, float, float, float]:
+        length = ATTACK_BOX_LENGTH
+        width = ATTACK_BOX_WIDTH
+        offset = self.player.width / 2 + length / 2 - 2
+        if self.player.facing_x > 0:
+            return (
+                self.player.x + offset - length / 2,
+                self.player.x + offset + length / 2,
+                self.player.y - width / 2,
+                self.player.y + width / 2,
+            )
+        if self.player.facing_x < 0:
+            return (
+                self.player.x - offset - length / 2,
+                self.player.x - offset + length / 2,
+                self.player.y - width / 2,
+                self.player.y + width / 2,
+            )
+        offset = self.player.height / 2 + length / 2 - 2
+        if self.player.facing_y >= 0:
+            return (
+                self.player.x - width / 2,
+                self.player.x + width / 2,
+                self.player.y + offset - length / 2,
+                self.player.y + offset + length / 2,
+            )
+        return (
+            self.player.x - width / 2,
+            self.player.x + width / 2,
+            self.player.y - offset - length / 2,
+            self.player.y - offset + length / 2,
+        )
+
+    def entity_hitbox(self, entity: Entity, padding: float = 0.0) -> tuple[float, float, float, float]:
+        return entity.rect(padding, padding)
+
+    @staticmethod
+    def rects_intersect(
+        a: tuple[float, float, float, float],
+        b: tuple[float, float, float, float],
+        padding: float = 0.0,
+    ) -> bool:
+        a_left, a_right, a_bottom, a_top = a
+        b_left, b_right, b_bottom, b_top = b
+        a_left -= padding
+        a_right += padding
+        a_bottom -= padding
+        a_top += padding
+        b_left -= padding
+        b_right += padding
+        b_bottom -= padding
+        b_top += padding
+        return not (
+            a_right <= b_left
+            or b_right <= a_left
+            or a_top <= b_bottom
+            or b_top <= a_bottom
+        )
 
     def damage_target(self, target: Entity, damage: int) -> None:
         target.health -= max(1, damage)
-        target.x += random.randint(-10, 10)
-        target.y += random.randint(-10, 10)
+        target.x = max(40, min(SCREEN_WIDTH - 40, target.x))
+        target.y = max(40, min(SCREEN_HEIGHT - 40, target.y))
 
     def on_update(self, delta_time: float) -> None:
-        if self.state in {"game_over", "victory"}:
+        if self.state == "game_over":
             return
 
         if self.player.attack_timer > 0:
@@ -285,10 +400,13 @@ class GameView(arcade.View):
             self.player.invuln_timer -= delta_time
         if self.attack_flash > 0:
             self.attack_flash -= delta_time
+        if self.punch_timer > 0:
+            self.punch_timer -= delta_time
         if self.damage_flash > 0:
             self.damage_flash -= delta_time
         if self.screen_shake > 0:
             self.screen_shake -= delta_time
+        self.update_microplastics(delta_time)
 
         dx = dy = 0
         if arcade.key.LEFT in self.pressed_keys:
@@ -304,9 +422,15 @@ class GameView(arcade.View):
         if magnitude:
             dx /= magnitude
             dy /= magnitude
+            if abs(dx) >= abs(dy):
+                self.player.facing_x = 1.0 if dx >= 0 else -1.0
+                self.player.facing_y = 0.0
+            else:
+                self.player.facing_x = 0.0
+                self.player.facing_y = 1.0 if dy >= 0 else -1.0
 
-        self.player.x = max(40, min(SCREEN_WIDTH - 40, self.player.x + dx * self.player.speed))
-        self.player.y = max(40, min(SCREEN_HEIGHT - 40, self.player.y + dy * self.player.speed))
+        self.player.x = max(40, min(SCREEN_WIDTH - 40, self.player.x + dx * self.player.effective_speed))
+        self.player.y = max(40, min(SCREEN_HEIGHT - 40, self.player.y + dy * self.player.effective_speed))
 
         if self.state == "combat":
             self.update_enemies()
@@ -317,22 +441,64 @@ class GameView(arcade.View):
         elif self.state == "boss":
             self.update_boss()
             if self.boss.health <= 0:
-                self.state = "victory"
-                self.current_message = "The building falls. The planet gets a fighting chance."
+                self.open_shop()
+
+    def update_microplastics(self, delta_time: float) -> None:
+        sustainability = self.player.sustainability
+        if sustainability < 0:
+            self.player.microplastics += (-sustainability) * MALAISE_GAIN_RATE * 1.4 * delta_time
+        elif sustainability > 0:
+            self.player.microplastics -= sustainability * MALAISE_RECOVERY_RATE * 1.2 * delta_time
+        self.player.microplastics = max(0.0, min(MALAISE_MAX, self.player.microplastics))
+
+        if self.player.microplastics >= 80:
+            self.player.microplastics_tick += delta_time
+            if self.player.microplastics_tick >= MALAISE_DAMAGE_INTERVAL:
+                self.player.microplastics_tick = 0.0
+                self.hit_player(4)
+        else:
+            self.player.microplastics_tick = 0.0
 
     def update_enemies(self) -> None:
         for enemy in self.enemies[:]:
             self.move_toward(enemy, self.player, enemy.speed)
-            if self.distance_between(enemy, self.player) < 32:
+            if self.rects_intersect(self.entity_hitbox(enemy, 2), self.entity_hitbox(self.player, 3)):
                 self.hit_player(enemy.touch_damage)
             if enemy.health <= 0:
                 self.enemies.remove(enemy)
                 self.player.money += 5
+                self.player.microplastics = max(0.0, self.player.microplastics - MALAISE_KILL_RECOVERY)
+                self.current_message = "Enemy down. Microplastics dropped."
 
     def update_boss(self) -> None:
         self.move_toward(self.boss, self.player, self.boss.speed)
-        if self.distance_between(self.boss, self.player) < 48:
+        if self.rects_intersect(self.entity_hitbox(self.boss, 4), self.entity_hitbox(self.player, 3)):
             self.hit_player(self.boss.touch_damage)
+
+    def buy_shop_item(self, item: str) -> None:
+        costs = {"heal": 8, "damage": 12, "speed": 12, "defense": 12}
+        if self.player.money < costs[item]:
+            self.current_message = "Not enough money."
+            return
+        self.player.money -= costs[item]
+        if item == "heal":
+            self.player.health = min(self.player.max_health, self.player.health + 30)
+            self.current_message = "Recovered some health."
+        elif item == "damage":
+            self.player.base_damage += 3
+            self.current_message = "Damage upgraded."
+        elif item == "speed":
+            self.player.base_speed += 1
+            self.current_message = "Speed upgraded."
+        elif item == "defense":
+            self.player.defense += 1
+            self.current_message = "Defense upgraded."
+        self.player.money = max(0, self.player.money)
+
+    def advance_after_shop(self) -> None:
+        self.player.floor += 1
+        self.spawn_floor()
+        self.current_message = "Next floor."
 
     def move_toward(self, mover: Entity, target: Entity, speed: float) -> None:
         dx = target.x - mover.x
@@ -343,13 +509,11 @@ class GameView(arcade.View):
         mover.x = max(40, min(SCREEN_WIDTH - 40, mover.x))
         mover.y = max(40, min(SCREEN_HEIGHT - 40, mover.y))
 
-    def distance_between(self, a: Entity, b: Entity) -> float:
-        return math.hypot(a.x - b.x, a.y - b.y)
-
     def hit_player(self, incoming: int) -> None:
         if self.player.invuln_timer > 0:
             return
-        damage = max(1, incoming - self.player.defense)
+        malaise_penalty = int(self.player.microplastics // 25)
+        damage = max(1, incoming - self.player.defense + malaise_penalty)
         self.player.health -= damage
         self.player.invuln_timer = 0.6
         self.damage_flash = 0.18
@@ -376,8 +540,9 @@ class GameView(arcade.View):
             self.draw_reward_menu()
         elif self.state == "game_over":
             self.draw_center_panel("Game Over", "Press R to restart.")
-        elif self.state == "victory":
-            self.draw_center_panel("Victory", "You defeated the CEO. Press R to play again.")
+        elif self.state == "shop":
+            self.draw_center_panel("Shop", "Spend money with 1-4, then press SPACE.")
+            self.draw_shop_menu()
 
     def draw_building(self, shake_x: int, shake_y: int) -> None:
         arcade.draw_lrbt_rectangle_filled(180 + shake_x, SCREEN_WIDTH - 180 + shake_x, 40 + shake_y, SCREEN_HEIGHT - 40 + shake_y, arcade.color.DARK_BROWN)
@@ -404,10 +569,37 @@ class GameView(arcade.View):
         self.draw_entity(self.player, shake_x, shake_y, arcade.color.AQUA)
         for enemy in self.enemies:
             self.draw_entity(enemy, shake_x, shake_y, enemy.color)
-        if self.state in {"boss", "victory"}:
+        if self.state == "boss":
             self.draw_entity(self.boss, shake_x, shake_y, self.boss.color)
-        if self.attack_flash > 0:
-            arcade.draw_circle_outline(self.player.x + shake_x, self.player.y + shake_y, ATTACK_RANGE, arcade.color.YELLOW, 3)
+        if self.punch_timer > 0:
+            self.draw_punch(shake_x, shake_y)
+
+    def draw_punch(self, shake_x: int, shake_y: int) -> None:
+        progress = 1.0 - max(0.0, self.punch_timer) / PUNCH_ANIMATION_TIME
+        reach = 18 + progress * 38
+        if self.player.facing_x > 0:
+            start_x = self.player.x + self.player.width / 2 + shake_x - 2
+            start_y = self.player.y + shake_y + 4
+            punch_x = self.player.x + self.player.width / 2 + reach + shake_x
+            punch_y = self.player.y + shake_y + 2
+        elif self.player.facing_x < 0:
+            start_x = self.player.x - self.player.width / 2 + shake_x + 2
+            start_y = self.player.y + shake_y + 4
+            punch_x = self.player.x - self.player.width / 2 - reach + shake_x
+            punch_y = self.player.y + shake_y + 2
+        elif self.player.facing_y >= 0:
+            start_x = self.player.x + shake_x + 2
+            start_y = self.player.y + self.player.height / 2 + shake_y - 2
+            punch_x = self.player.x + shake_x + 2
+            punch_y = self.player.y + self.player.height / 2 + reach + shake_y
+        else:
+            start_x = self.player.x + shake_x + 2
+            start_y = self.player.y - self.player.height / 2 + shake_y + 2
+            punch_x = self.player.x + shake_x + 2
+            punch_y = self.player.y - self.player.height / 2 - reach + shake_y
+        arcade.draw_line(start_x, start_y, punch_x, punch_y, arcade.color.BEIGE, 8)
+        arcade.draw_circle_filled(punch_x, punch_y, 10, arcade.color.WHITE_SMOKE)
+        arcade.draw_circle_outline(punch_x, punch_y, 10, arcade.color.BLACK, 2)
 
     def draw_entity(self, entity: Entity, shake_x: int, shake_y: int, color: arcade.Color) -> None:
         arcade.draw_lbwh_rectangle_filled(
@@ -438,12 +630,46 @@ class GameView(arcade.View):
         arcade.draw_text(f"Health: {self.player.health}/{self.player.max_health}", 30, SCREEN_HEIGHT - 56, TEXT, 16)
         arcade.draw_text(f"Money: {self.player.money}", 30, SCREEN_HEIGHT - 82, TEXT, 16)
         arcade.draw_text(f"Floor: {self.player.floor}", 30, SCREEN_HEIGHT - 108, TEXT, 16)
-        arcade.draw_text(f"Damage: {self.player.damage}  Speed: {self.player.speed}  Sustainability: {self.player.sustainability}", 30, SCREEN_HEIGHT - 134, MUTED, 12)
+        arcade.draw_text(
+            f"Damage: {self.player.effective_damage}  Speed: {self.player.effective_speed}  Sustainability: {self.player.sustainability}",
+            30,
+            SCREEN_HEIGHT - 134,
+            MUTED,
+            12,
+        )
+        stage = self.player.microplastics_stage
+        stage_text = ["Clean", "Dirty", "Toxic", "Critical"][stage]
+        arcade.draw_text(
+            f"Microplastics: {int(self.player.microplastics)}/100  Stage: {stage_text}",
+            30,
+            SCREEN_HEIGHT - 152,
+            MUTED,
+            12,
+        )
+        bar_left = 30
+        bar_bottom = SCREEN_HEIGHT - 176
+        bar_width = 320
+        bar_height = 16
+        fill_width = bar_width * (self.player.microplastics / MALAISE_MAX)
+        if self.player.microplastics < 40:
+            bar_color = arcade.color.AMAZON
+        elif self.player.microplastics < 70:
+            bar_color = arcade.color.GOLD
+        else:
+            bar_color = arcade.color.RED_ORANGE
+        arcade.draw_lbwh_rectangle_outline(bar_left, bar_bottom, bar_width, bar_height, arcade.color.WHITE, 1)
+        arcade.draw_lbwh_rectangle_filled(bar_left, bar_bottom, fill_width, bar_height, bar_color)
+        for tick in (25, 50, 75):
+            x = bar_left + bar_width * (tick / MALAISE_MAX)
+            arcade.draw_line(x, bar_bottom, x, bar_bottom + bar_height, arcade.color.WHITE, 1)
+        arcade.draw_text("Lower is better", bar_left + 2, bar_bottom - 16, MUTED, 10)
 
         arcade.draw_lrbt_rectangle_filled(SCREEN_WIDTH - 250, SCREEN_WIDTH - 18, SCREEN_HEIGHT - 150, SCREEN_HEIGHT - 18, PANEL)
         arcade.draw_text("Objectives", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 56, TEXT, 16)
         if self.state == "boss":
             objective = "Defeat the CEO"
+        elif self.state == "shop":
+            objective = "Spend money before the next floor"
         elif self.state == "reward":
             objective = "Choose your next outfit"
         else:
@@ -451,6 +677,10 @@ class GameView(arcade.View):
         arcade.draw_text(objective, SCREEN_WIDTH - 232, SCREEN_HEIGHT - 82, MUTED, 14)
         arcade.draw_text("Move: arrows", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 108, MUTED, 12)
         arcade.draw_text("Attack: space", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 126, MUTED, 12)
+        if self.state == "shop":
+            arcade.draw_text("1-4 or click items", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 154, MUTED, 12)
+            arcade.draw_text("SPACE or ENTER to continue", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 172, MUTED, 12)
+            arcade.draw_text("Buy what you can, then leave", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 226, MUTED, 12)
 
     def draw_messages(self) -> None:
         arcade.draw_text(self.current_message, SCREEN_WIDTH / 2, 24, arcade.color.GOLD, 14, anchor_x="center")
@@ -460,6 +690,30 @@ class GameView(arcade.View):
         arcade.draw_lbwh_rectangle_outline(SCREEN_WIDTH / 2 - 280, SCREEN_HEIGHT / 2 - 110, 560, 220, arcade.color.WHITE, 3)
         arcade.draw_text(title, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 40, TEXT, 34, anchor_x="center")
         arcade.draw_text(subtitle, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 12, MUTED, 14, anchor_x="center")
+
+    def draw_shop_menu(self) -> None:
+        panel_left = SCREEN_WIDTH / 2 - 380
+        panel_bottom = SCREEN_HEIGHT / 2 - 170
+        arcade.draw_lbwh_rectangle_filled(panel_left, panel_bottom, 760, 340, arcade.color.DARK_BLUE_GRAY)
+        arcade.draw_lbwh_rectangle_outline(panel_left, panel_bottom, 760, 340, arcade.color.WHITE, 3)
+        arcade.draw_text("Shop", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 128, TEXT, 30, anchor_x="center")
+        arcade.draw_text("Buy upgrades with money, or press SPACE when finished", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 94, MUTED, 14, anchor_x="center")
+        arcade.draw_text("ENTER also works if SPACE feels ignored", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 72, MUTED, 11, anchor_x="center")
+        self.shop_bounds = []
+        for idx, (item, label, cost) in enumerate(self.shop_options):
+            y = SCREEN_HEIGHT / 2 + 38 - idx * 72
+            left = SCREEN_WIDTH / 2 - 330
+            bottom = y - 28
+            right = SCREEN_WIDTH / 2 + 330
+            top = y + 28
+            self.shop_bounds.append((left, right, bottom, top))
+            affordable = self.player.money >= cost
+            fill = arcade.color.DARK_GREEN if affordable else arcade.color.DARK_RED
+            arcade.draw_lbwh_rectangle_filled(left, bottom, 660, 56, fill)
+            arcade.draw_lbwh_rectangle_outline(left, bottom, 660, 56, arcade.color.WHITE, 2)
+            arcade.draw_text(f"{idx + 1}. {label}", left + 18, y + 8, TEXT, 16)
+            arcade.draw_text(f"${cost}", left + 560, y + 8, TEXT, 16)
+            arcade.draw_text(item, left + 18, y - 14, MUTED, 11)
 
     def draw_reward_menu(self) -> None:
         panel_left = SCREEN_WIDTH / 2 - 380
