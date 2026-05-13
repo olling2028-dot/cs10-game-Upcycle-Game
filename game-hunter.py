@@ -22,7 +22,7 @@ SCREEN_TITLE = "Hunter & Ollin - Upcycle Game MVP"
 
 PLAYER_SPEED = 5
 ATTACK_COOLDOWN = 0.16
-ATTACK_RANGE = 70
+ATTACK_RANGE = 100
 ATTACK_DAMAGE = 18
 ATTACK_BOX_LENGTH = 84
 ATTACK_BOX_WIDTH = 56
@@ -203,6 +203,8 @@ class GameView(arcade.View):
         self.enemies: list[Enemy] = []
         self.boss = Boss()
         self.pressed_keys: set[int] = set()
+        self.mouse_x = self.player.x
+        self.mouse_y = self.player.y
         self.attack_flash = 0.0
         self.punch_timer = 0.0
         self.special_attack_timer = 0.0
@@ -346,11 +348,34 @@ class GameView(arcade.View):
         self.punch_timer = PUNCH_ANIMATION_TIME
         targets = self.enemies if self.state == "combat" else [self.boss]
         hit = False
-        attack_rect = self.attack_rect()
+        # Aim toward the mouse pointer when attacking.
+        aim_x = self.mouse_x - self.player.x
+        aim_y = self.mouse_y - self.player.y
+        aim_len = math.hypot(aim_x, aim_y) or 1.0
+        aim_x /= aim_len
+        aim_y /= aim_len
+        # Use a cone check: target must be within range and roughly in the aim direction.
+        cos_threshold = 0.75
         for target in list(targets):
-            if self.rects_intersect(attack_rect, self.entity_hitbox(target, 0), padding=4):
-                self.damage_target(target, self.player.effective_damage)
-                hit = True
+            dx = target.x - self.player.x
+            dy = target.y - self.player.y
+            dist = math.hypot(dx, dy)
+            if dist <= ATTACK_RANGE:
+                dot = (dx * aim_x + dy * aim_y) / (dist or 1.0)
+                if dot >= cos_threshold:
+                    self.damage_target(target, self.player.effective_damage)
+                    hit = True
+        # Set discrete 8-direction facing to follow the mouse (allows diagonals).
+        def sign(v: float) -> int:
+            return 1 if v > 0 else -1 if v < 0 else 0
+
+        fx = sign(aim_x) if abs(aim_x) > 0.25 else 0
+        fy = sign(aim_y) if abs(aim_y) > 0.25 else 0
+        if fx == 0 and fy == 0:
+            fx = 1
+            fy = 0
+        self.player.facing_x = float(fx)
+        self.player.facing_y = float(fy)
         if hit:
             self.screen_shake = 0.08
         else:
@@ -384,13 +409,21 @@ class GameView(arcade.View):
             self.special_attack_effect = "lunge"
             self.special_attack_effect_timer = 0.26
             self.current_message = "Lunge strike!"
-            facing_x = self.player.facing_x
-            facing_y = self.player.facing_y
-            if facing_x == 0 and facing_y == 0:
-                facing_x = 1.0
-            facing_length = math.hypot(facing_x, facing_y) or 1.0
-            self.lunge_dash_dx = facing_x / facing_length
-            self.lunge_dash_dy = facing_y / facing_length
+            # Lunge toward the pointer
+            aim_x = self.mouse_x - self.player.x
+            aim_y = self.mouse_y - self.player.y
+            aim_len = math.hypot(aim_x, aim_y)
+            if aim_len == 0:
+                aim_x, aim_y = 1.0, 0.0
+                aim_len = 1.0
+            self.lunge_dash_dx = aim_x / aim_len
+            self.lunge_dash_dy = aim_y / aim_len
+            # Set 8-direction facing from dash vector so visuals follow the pointer
+            def sign(v: float) -> int:
+                return 1 if v > 0 else -1 if v < 0 else 0
+
+            self.player.facing_x = float(sign(self.lunge_dash_dx))
+            self.player.facing_y = float(sign(self.lunge_dash_dy))
             self.lunge_dash_timer = LUNGE_DASH_TIME
             self.player.x += self.lunge_dash_dx * LUNGE_DASH_DISTANCE * 0.35
             self.player.y += self.lunge_dash_dy * LUNGE_DASH_DISTANCE * 0.35
@@ -438,6 +471,10 @@ class GameView(arcade.View):
             self.player.y - offset - length / 2,
             self.player.y - offset + length / 2,
         )
+
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float) -> None:
+        self.mouse_x = x
+        self.mouse_y = y
 
     def entity_hitbox(self, entity: Entity, padding: float = 0.0) -> tuple[float, float, float, float]:
         return entity.rect(padding, padding)
@@ -504,25 +541,27 @@ class GameView(arcade.View):
         self.update_microplastics(delta_time)
 
         dx = dy = 0
-        if arcade.key.LEFT in self.pressed_keys:
+        if arcade.key.LEFT in self.pressed_keys or ord("a") in self.pressed_keys or ord("A") in self.pressed_keys:
             dx -= 1
-        if arcade.key.RIGHT in self.pressed_keys:
+        if arcade.key.RIGHT in self.pressed_keys or ord("d") in self.pressed_keys or ord("D") in self.pressed_keys:
             dx += 1
-        if arcade.key.UP in self.pressed_keys:
+        if arcade.key.UP in self.pressed_keys or ord("w") in self.pressed_keys or ord("W") in self.pressed_keys:
             dy += 1
-        if arcade.key.DOWN in self.pressed_keys:
+        if arcade.key.DOWN in self.pressed_keys or ord("s") in self.pressed_keys or ord("S") in self.pressed_keys:
             dy -= 1
 
         magnitude = math.hypot(dx, dy)
         if magnitude:
             dx /= magnitude
             dy /= magnitude
-            if abs(dx) >= abs(dy):
-                self.player.facing_x = 1.0 if dx >= 0 else -1.0
-                self.player.facing_y = 0.0
-            else:
-                self.player.facing_x = 0.0
-                self.player.facing_y = 1.0 if dy >= 0 else -1.0
+            # Do not let movement override facing while an attack or special effect is animating.
+            if self.punch_timer <= 0 and self.special_attack_effect_timer <= 0:
+                if abs(dx) >= abs(dy):
+                    self.player.facing_x = 1.0 if dx >= 0 else -1.0
+                    self.player.facing_y = 0.0
+                else:
+                    self.player.facing_x = 0.0
+                    self.player.facing_y = 1.0 if dy >= 0 else -1.0
 
         self.player.x = max(40, min(SCREEN_WIDTH - 40, self.player.x + dx * self.player.effective_speed))
         self.player.y = max(40, min(SCREEN_HEIGHT - 40, self.player.y + dy * self.player.effective_speed))
@@ -659,7 +698,7 @@ class GameView(arcade.View):
         self.draw_messages()
 
         if self.state == "intro":
-            self.draw_center_panel("Hunter & Ollin", "Use arrow keys to move. Press SPACE to attack. Press ENTER to start.")
+            self.draw_center_panel("Hunter & Ollin", "Use arrow keys or WASD to move. Click to aim; press SPACE to attack. Press ENTER to start.")
         elif self.state == "reward":
             self.draw_reward_menu()
         elif self.state == "game_over":
@@ -703,7 +742,12 @@ class GameView(arcade.View):
     def draw_punch(self, shake_x: int, shake_y: int) -> None:
         progress = 1.0 - max(0.0, self.punch_timer) / PUNCH_ANIMATION_TIME
         reach = 18 + progress * 38
-        if self.player.facing_x > 0:
+        if self.player.facing_x != 0 and self.player.facing_y != 0:
+            start_x = self.player.x + (self.player.width / 2) * self.player.facing_x + shake_x
+            start_y = self.player.y + (self.player.height / 2) * self.player.facing_y + shake_y
+            punch_x = self.player.x + (self.player.width / 2) * self.player.facing_x + reach * self.player.facing_x + shake_x
+            punch_y = self.player.y + (self.player.height / 2) * self.player.facing_y + reach * self.player.facing_y + shake_y
+        elif self.player.facing_x > 0:
             start_x = self.player.x + self.player.width / 2 + shake_x - 2
             start_y = self.player.y + shake_y + 4
             punch_x = self.player.x + self.player.width / 2 + reach + shake_x
@@ -840,8 +884,8 @@ class GameView(arcade.View):
         else:
             objective = "Clear the floor"
         arcade.draw_text(objective, SCREEN_WIDTH - 232, SCREEN_HEIGHT - 82, MUTED, 14)
-        arcade.draw_text("Move: arrows", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 108, MUTED, 12)
-        arcade.draw_text("Attack: space", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 126, MUTED, 12)
+        arcade.draw_text("Move: arrows or WASD", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 108, MUTED, 12)
+        arcade.draw_text("Attack: SPACE (aim with mouse)", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 126, MUTED, 12)
         if "sweep" in self.player.unlocked_attacks:
             arcade.draw_text("Sweep: Q", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 144, MUTED, 12)
         if "lunge" in self.player.unlocked_attacks:
@@ -849,7 +893,6 @@ class GameView(arcade.View):
         if self.state == "shop":
             arcade.draw_text("1-4 or click items", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 154, MUTED, 12)
             arcade.draw_text("SPACE or ENTER to continue", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 172, MUTED, 12)
-            arcade.draw_text("Buy what you can, then leave", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 226, MUTED, 12)
 
     def draw_messages(self) -> None:
         arcade.draw_text(self.current_message, SCREEN_WIDTH / 2, 24, arcade.color.GOLD, 14, anchor_x="center")
