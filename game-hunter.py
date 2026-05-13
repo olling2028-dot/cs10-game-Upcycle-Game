@@ -21,13 +21,15 @@ SCREEN_HEIGHT = 700
 SCREEN_TITLE = "Hunter & Ollin - Upcycle Game MVP"
 
 PLAYER_SPEED = 5
-ATTACK_COOLDOWN = 0.25
+ATTACK_COOLDOWN = 0.16
 ATTACK_RANGE = 70
 ATTACK_DAMAGE = 18
 ATTACK_BOX_LENGTH = 84
 ATTACK_BOX_WIDTH = 56
-PUNCH_ANIMATION_TIME = 0.14
-SPECIAL_ATTACK_COOLDOWN = 0.9
+PUNCH_ANIMATION_TIME = 0.1
+SPECIAL_ATTACK_COOLDOWN = 0.58
+LUNGE_DASH_DISTANCE = 88
+LUNGE_DASH_TIME = 0.14
 BASE_PLAYER_MAX_HEALTH = 120
 BASE_PLAYER_SPEED = 5
 BASE_PLAYER_DAMAGE = 18
@@ -36,7 +38,10 @@ MALAISE_MAX = 100.0
 MALAISE_GAIN_RATE = 1.0
 MALAISE_RECOVERY_RATE = 0.28
 MALAISE_DAMAGE_INTERVAL = 1.6
+MALAISE_TICK_THRESHOLD = 55.0
+MALAISE_TICK_DAMAGE = 2
 MALAISE_KILL_RECOVERY = 10.0
+MALAISE_PASSIVE_RECOVERY = 0.18
 
 BACKGROUND = arcade.color.DARK_SLATE_GRAY
 PANEL = arcade.color.DARK_BROWN
@@ -201,6 +206,11 @@ class GameView(arcade.View):
         self.attack_flash = 0.0
         self.punch_timer = 0.0
         self.special_attack_timer = 0.0
+        self.special_attack_effect = ""
+        self.special_attack_effect_timer = 0.0
+        self.lunge_dash_timer = 0.0
+        self.lunge_dash_dx = 0.0
+        self.lunge_dash_dy = 0.0
         self.damage_flash = 0.0
         self.screen_shake = 0.0
         self.current_message = "Press ENTER to start the climb."
@@ -351,13 +361,19 @@ class GameView(arcade.View):
             return
         if key == arcade.key.Q and "sweep" in self.player.unlocked_attacks:
             self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.special_attack_effect = "sweep"
+            self.special_attack_effect_timer = 0.24
             self.current_message = "Sweep attack!"
             targets = self.enemies if self.state == "combat" else [self.boss]
             hit = False
+            sweep_rect = (
+                self.player.x - 110,
+                self.player.x + 110,
+                self.player.y - 86,
+                self.player.y + 86,
+            )
             for target in list(targets):
-                dx = abs(target.x - self.player.x)
-                dy = abs(target.y - self.player.y)
-                if dx <= 96 and dy <= 72:
+                if self.rects_intersect(sweep_rect, self.entity_hitbox(target, 4), padding=6):
                     self.damage_target(target, self.player.effective_damage + 6)
                     hit = True
             if hit:
@@ -365,13 +381,26 @@ class GameView(arcade.View):
             return
         if key == arcade.key.E and "lunge" in self.player.unlocked_attacks:
             self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.special_attack_effect = "lunge"
+            self.special_attack_effect_timer = 0.26
             self.current_message = "Lunge strike!"
+            facing_x = self.player.facing_x
+            facing_y = self.player.facing_y
+            if facing_x == 0 and facing_y == 0:
+                facing_x = 1.0
+            facing_length = math.hypot(facing_x, facing_y) or 1.0
+            self.lunge_dash_dx = facing_x / facing_length
+            self.lunge_dash_dy = facing_y / facing_length
+            self.lunge_dash_timer = LUNGE_DASH_TIME
+            self.player.x += self.lunge_dash_dx * LUNGE_DASH_DISTANCE * 0.35
+            self.player.y += self.lunge_dash_dy * LUNGE_DASH_DISTANCE * 0.35
             targets = self.enemies if self.state == "combat" else [self.boss]
             hit = False
             for target in list(targets):
                 line_dx = target.x - self.player.x
                 line_dy = target.y - self.player.y
-                if math.hypot(line_dx, line_dy) <= 130:
+                forward = line_dx * self.lunge_dash_dx + line_dy * self.lunge_dash_dy
+                if 0 <= forward <= 150 and abs(line_dx * self.lunge_dash_dy - line_dy * self.lunge_dash_dx) <= 58:
                     self.damage_target(target, self.player.effective_damage + 10)
                     hit = True
             if hit:
@@ -449,6 +478,17 @@ class GameView(arcade.View):
             self.player.attack_timer -= delta_time
         if self.special_attack_timer > 0:
             self.special_attack_timer -= delta_time
+        if self.special_attack_effect_timer > 0:
+            self.special_attack_effect_timer -= delta_time
+            if self.special_attack_effect_timer <= 0:
+                self.special_attack_effect = ""
+        if self.lunge_dash_timer > 0:
+            dash_step = LUNGE_DASH_DISTANCE / LUNGE_DASH_TIME * delta_time
+            self.player.x += self.lunge_dash_dx * dash_step
+            self.player.y += self.lunge_dash_dy * dash_step
+            self.player.x = max(40, min(SCREEN_WIDTH - 40, self.player.x))
+            self.player.y = max(40, min(SCREEN_HEIGHT - 40, self.player.y))
+            self.lunge_dash_timer -= delta_time
         if self.player.invuln_timer > 0:
             self.player.invuln_timer -= delta_time
         if self.attack_flash > 0:
@@ -504,16 +544,17 @@ class GameView(arcade.View):
             return
         sustainability = self.player.sustainability
         if sustainability < 0:
-            self.player.microplastics += (-sustainability) * MALAISE_GAIN_RATE * 1.4 * delta_time
+            self.player.microplastics += ((-sustainability) ** 0.85) * MALAISE_GAIN_RATE * 0.75 * delta_time
         elif sustainability > 0:
-            self.player.microplastics -= sustainability * MALAISE_RECOVERY_RATE * 1.2 * delta_time
+            self.player.microplastics -= sustainability * MALAISE_RECOVERY_RATE * 1.5 * delta_time
+        self.player.microplastics -= MALAISE_PASSIVE_RECOVERY * delta_time
         self.player.microplastics = max(0.0, min(MALAISE_MAX, self.player.microplastics))
 
-        if self.player.microplastics >= 80:
+        if self.player.microplastics >= MALAISE_TICK_THRESHOLD:
             self.player.microplastics_tick += delta_time
             if self.player.microplastics_tick >= MALAISE_DAMAGE_INTERVAL:
                 self.player.microplastics_tick = 0.0
-                self.hit_player(4)
+                self.hit_player(MALAISE_TICK_DAMAGE)
         else:
             self.player.microplastics_tick = 0.0
 
@@ -597,6 +638,7 @@ class GameView(arcade.View):
         malaise_penalty = int(self.player.microplastics // 25)
         damage = max(1, incoming - self.player.defense + malaise_penalty)
         self.player.health -= damage
+        self.player.microplastics = min(MALAISE_MAX, self.player.microplastics + damage * 1.7)
         self.player.invuln_timer = 0.6
         self.damage_flash = 0.18
         self.current_message = f"You took {damage} damage."
@@ -655,6 +697,8 @@ class GameView(arcade.View):
             self.draw_entity(self.boss, shake_x, shake_y, self.boss.color)
         if self.punch_timer > 0:
             self.draw_punch(shake_x, shake_y)
+        if self.special_attack_effect_timer > 0:
+            self.draw_special_attack_effect(shake_x, shake_y)
 
     def draw_punch(self, shake_x: int, shake_y: int) -> None:
         progress = 1.0 - max(0.0, self.punch_timer) / PUNCH_ANIMATION_TIME
@@ -682,6 +726,45 @@ class GameView(arcade.View):
         arcade.draw_line(start_x, start_y, punch_x, punch_y, arcade.color.BEIGE, 8)
         arcade.draw_circle_filled(punch_x, punch_y, 10, arcade.color.WHITE_SMOKE)
         arcade.draw_circle_outline(punch_x, punch_y, 10, arcade.color.BLACK, 2)
+
+    def draw_special_attack_effect(self, shake_x: int, shake_y: int) -> None:
+        if self.special_attack_effect == "sweep":
+            arcade.draw_arc_outline(
+                self.player.x + shake_x,
+                self.player.y + shake_y,
+                170,
+                170,
+                arcade.color.MEDIUM_AQUAMARINE,
+                20,
+                160,
+                340,
+                8,
+            )
+            arcade.draw_circle_outline(self.player.x + shake_x, self.player.y + shake_y, 58, arcade.color.WHITE, 3)
+        elif self.special_attack_effect == "lunge":
+            facing_x = self.player.facing_x
+            facing_y = self.player.facing_y
+            if facing_x == 0 and facing_y == 0:
+                facing_x = 1.0
+            end_x = self.player.x + facing_x * 92 + shake_x
+            end_y = self.player.y + facing_y * 92 + shake_y
+            arcade.draw_line(
+                self.player.x + shake_x,
+                self.player.y + shake_y,
+                end_x,
+                end_y,
+                arcade.color.YELLOW_ORANGE,
+                10,
+            )
+            arcade.draw_triangle_filled(
+                end_x,
+                end_y,
+                end_x - facing_y * 14 - facing_x * 8,
+                end_y + facing_x * 14 - facing_y * 8,
+                end_x + facing_y * 14 - facing_x * 8,
+                end_y - facing_x * 14 - facing_y * 8,
+                arcade.color.WHITE,
+            )
 
     def draw_entity(self, entity: Entity, shake_x: int, shake_y: int, color: arcade.Color) -> None:
         arcade.draw_lbwh_rectangle_filled(
@@ -824,7 +907,7 @@ class GameView(arcade.View):
             arcade.draw_text(str(idx + 1), left + 42, y - 8, arcade.color.BLACK, 18, anchor_x="center")
             arcade.draw_text(outfit.name, left + 86, y + 14, arcade.color.BLACK, 18)
             arcade.draw_text(outfit.description, left + 86, y - 10, arcade.color.BLACK, 11)
-            stats = f"HP +{outfit.max_health_bonus}  DMG +{outfit.damage_bonus}  SPD +{outfit.speed_bonus}  SUS {outfit.sustainability:+d}"
+            stats = f"HP +{outfit.max_health_bonus}  DMG +{outfit.damage_bonus}  SPD +{outfit.speed_bonus}  Sustainability {outfit.sustainability:+d}"
             arcade.draw_text(stats, left + 86, y - 28, arcade.color.BLACK, 10)
 
 
