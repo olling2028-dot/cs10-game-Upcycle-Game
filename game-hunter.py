@@ -35,21 +35,27 @@ ENEMY_TOUCH_PADDING = 2
 BOSS_HITBOX_WIDTH = 88
 BOSS_HITBOX_HEIGHT = 98
 PUNCH_ANIMATION_TIME = 0.1
-SPECIAL_ATTACK_COOLDOWN = 0.58
+LUNGE_SPECIAL_COOLDOWN = 0.32
+SWEEP_SPECIAL_COOLDOWN = 2.58
+SLAM_SPECIAL_COOLDOWN = 8.0
+PULSE_SPECIAL_COOLDOWN = 3.3
 LUNGE_DASH_DISTANCE = 88
 LUNGE_DASH_TIME = 0.14
+SLAM_STUN_TIME = 1.0
 BASE_PLAYER_MAX_HEALTH = 120
 BASE_PLAYER_SPEED = 5
 BASE_PLAYER_DAMAGE = 18
 BASE_PLAYER_DEFENSE = 0
 MALAISE_MAX = 100.0
-MALAISE_GAIN_RATE = 0.22
-MALAISE_RECOVERY_RATE = 0.08
+MALAISE_GAIN_RATE = 0.24
+MALAISE_RECOVERY_RATE = 0.05
 MALAISE_DAMAGE_INTERVAL = 2.4
 MALAISE_TICK_THRESHOLD = 55.0
 MALAISE_TICK_DAMAGE = 2
 MALAISE_KILL_RECOVERY = 10.0
-MALAISE_PASSIVE_RECOVERY = 0.08
+MALAISE_PASSIVE_RECOVERY = 0.03
+MALAISE_HIT_MULTIPLIER = 0.8
+MALAISE_HIT_MINIMUM = 1.5
 
 BACKGROUND = arcade.color.DARK_SLATE_GRAY
 PANEL = arcade.color.DARK_BROWN
@@ -58,12 +64,34 @@ MUTED = arcade.color.LIGHT_GRAY
 GOOD = arcade.color.AMAZON
 BAD = arcade.color.RED_ORANGE
 
+PLAYER_TEXTURE_FILES = {
+    "default": "images/Main_char.png",
+    "cool": "images/Main_cool_char.png",
+    "winter": "images/Main_char_winter.png",
+}
+
+ENEMY_TEXTURE_FILES = {
+    "slime": "images/Slime.png",
+    "zombie": "images/Zombie.png",
+    "zombie_orange": "images/Zombie_orange.png",
+    "ogre": "images/Oger.png",
+}
+
+BOSS_TEXTURE_FILES = {
+    "robo": "images/Robo_boss.png",
+    "western": "images/Western_Boss.png",
+    "meatball": "images/Robo_Meatball.png",
+}
+
 WEAPON_TEMPLATES = [
     ("Rebar", "Blade", 6, 1, 0, "basic", (100, 149, 237)),
     ("Bottle", "Spear", 5, 0, 1, "lunge", (135, 206, 235)),
     ("Patchwork", "Hammer", 8, -1, 0, "sweep", (70, 130, 180)),
     ("Circuit", "Cutter", 7, 0, -1, "sweep", (64, 224, 208)),
     ("Scrap", "Bracer", 4, 2, 1, "lunge", (54, 117, 136)),
+    ("Tin", "Halberd", 6, 1, 2, "pierce", (176, 224, 230)),
+    ("Rivet", "Maul", 9, -2, -1, "slam", (205, 92, 92)),
+    ("Carbon", "Fork", 5, 1, 0, "pulse", (32, 178, 170)),
 ]
 
 ARMOR_TEMPLATES = [
@@ -98,6 +126,8 @@ class Item:
     max_health_bonus: int = 0
     sustainability: int = 0
     weapon_style: str = ""
+    rarity: str = "common"
+    legendary_ability: str = ""
     color: arcade.Color = arcade.color.LIGHT_GRAY
 
     @property
@@ -115,17 +145,23 @@ class Item:
         return arcade.color.CYAN if self.type == "weapon" else arcade.color.ORANGE
 
     @property
+    def is_legendary(self) -> bool:
+        return self.rarity == "legendary"
+
+    @property
     def summary(self) -> str:
         parts: list[str] = []
         if self.type == "weapon":
             parts.append(f"+{self.damage_bonus} dmg")
             if self.sustainability:
-                parts.append(f"{self.sustainability:+d} sustain")
+                parts.append(f"{self.sustainability:+d} sustainability")
         else:
             parts.append(f"+{self.defense_bonus} def")
             parts.append(f"+{self.max_health_bonus} hp")
             if self.sustainability:
-                parts.append(f"{self.sustainability:+d} sustain")
+                parts.append(f"{self.sustainability:+d} sustainability")
+        if self.is_legendary:
+            parts.append("LEGENDARY")
         return " | ".join(parts)
 
 
@@ -207,6 +243,7 @@ class Player(Entity):
         self.money = 0
         self.floor = 1
         self.outfits: list[Outfit] = []
+        self.visual_theme = "default"
         self.unlocked_attacks: set[str] = {"basic"}
         self.max_health = self.base_max_health
         self.health = self.max_health
@@ -220,11 +257,21 @@ class Player(Entity):
     def damage(self) -> int:
         outfit_bonus = sum(o.damage_bonus for o in self.outfits)
         weapon_bonus = (self.equipped_weapon.damage_bonus if self.equipped_weapon else 0)
-        return self.base_damage + outfit_bonus + weapon_bonus
+        armor_bonus = (self.equipped_armor.damage_bonus if self.equipped_armor else 0)
+        legendary_bonus = 0
+        if self.equipped_armor and self.equipped_armor.is_legendary:
+            if self.equipped_armor.legendary_ability == "cool":
+                legendary_bonus += 2
+            elif self.equipped_armor.legendary_ability == "winter":
+                legendary_bonus += 1
+        return self.base_damage + outfit_bonus + weapon_bonus + armor_bonus + legendary_bonus
 
     @property
     def speed(self) -> int:
-        return self.base_speed + sum(o.speed_bonus for o in self.outfits)
+        legendary_bonus = 0
+        if self.equipped_armor and self.equipped_armor.is_legendary and self.equipped_armor.legendary_ability == "cool":
+            legendary_bonus += 1
+        return self.base_speed + sum(o.speed_bonus for o in self.outfits) + legendary_bonus
 
     @property
     def sustainability(self) -> int:
@@ -253,33 +300,119 @@ class Player(Entity):
         bonus_health = sum(o.max_health_bonus for o in self.outfits)
         equip_hp = 0
         equip_def = 0
+        equip_speed = 0
+        equip_damage = 0
         if self.equipped_armor:
             equip_hp += self.equipped_armor.max_health_bonus
             equip_def += self.equipped_armor.defense_bonus
+            equip_speed += self.equipped_armor.speed_bonus if hasattr(self.equipped_armor, "speed_bonus") else 0
+            equip_damage += self.equipped_armor.damage_bonus
+            if self.equipped_armor.is_legendary and self.equipped_armor.legendary_ability == "winter":
+                equip_hp += 12
+                equip_def += 2
         self.max_health = self.base_max_health + bonus_health + equip_hp
         self.defense = BASE_PLAYER_DEFENSE + sum(o.defense_bonus for o in self.outfits) + equip_def
         if self.max_health > previous_max_health:
             self.health += self.max_health - previous_max_health
         self.health = min(self.health, self.max_health)
 
+    def apply_pickup_visuals(self, item: Item) -> None:
+        """Keep pickup visuals tied to equipped gear instead of loose inventory loot."""
+        return
+
+    def update_visual_theme_from_equipment(self) -> None:
+        weapon = self.equipped_weapon
+        armor = self.equipped_armor
+        equipped_items = [item for item in (weapon, armor) if item is not None]
+        for item in equipped_items:
+            item_name = item.name.lower()
+            item_description = item.description.lower()
+            if "winter" in item_name or "winter" in item_description:
+                self.visual_theme = "winter"
+                return
+            if "cool" in item_name or "cool" in item_description:
+                self.visual_theme = "cool"
+                return
+        self.visual_theme = "default"
+
+    @property
+    def legendary_armor_ability(self) -> str:
+        if self.equipped_armor and self.equipped_armor.is_legendary:
+            return self.equipped_armor.legendary_ability
+        return ""
+
 
 class Enemy(Entity):
     def __init__(self, x: float, y: float, floor: int):
-        size = 34 + floor * 2
+        self.variant = self.pick_variant(floor)
+        # Keep early floors approachable and let difficulty rise more gradually.
+        size = 34 + floor
+        if self.variant == "slime":
+            size = int(size * 1.05)
+        elif self.variant == "ogre":
+            size = int(size * 1.18)
         super().__init__(x, y, size, size, arcade.color.FIREBRICK)
-        self.max_health = 40 + floor * 18
+        self.max_health = 38 + floor * 12
         self.health = self.max_health
-        self.speed = 1.2 + floor * 0.25
-        self.touch_damage = 8 + floor * 2
+        self.speed = 1.15 + floor * 0.16
+        self.touch_damage = 7 + floor * 1
+        self.stun_timer = 0.0
+        self.ai_timer = 0.0
+        self.ai_state = "idle"
+        if self.variant == "slime":
+            self.max_health = int(self.max_health * 2.1)
+            self.health = self.max_health
+            self.speed *= 0.55
+            self.touch_damage = max(1, int(self.touch_damage * 0.95))
+            self.ai_timer = random.uniform(0.9, 1.7)
+        elif self.variant == "zombie":
+            self.max_health = int(self.max_health * 1.15)
+            self.health = self.max_health
+            self.speed *= 0.98
+        elif self.variant == "zombie_orange":
+            self.max_health = int(self.max_health * 1.2)
+            self.health = self.max_health
+            self.speed *= 1.06
+            self.touch_damage = int(self.touch_damage * 1.08)
+        elif self.variant == "ogre":
+            self.speed *= 1.45
+            self.max_health = int(self.max_health * 1.28)
+            self.health = self.max_health
+            self.touch_damage = int(self.touch_damage * 1.25)
+
+    @staticmethod
+    def pick_variant(floor: int) -> str:
+        # Floors now mix enemy types instead of locking one variant per floor.
+        weights = [
+            ("slime", 4 + max(0, 3 - floor // 3)),
+            ("zombie", 3 + floor // 4),
+            ("zombie_orange", 2 + floor // 5),
+            ("ogre", 1 + floor // 6),
+        ]
+        variants = [variant for variant, weight in weights for _ in range(weight)]
+        return random.choice(variants)
 
 
 class Boss(Entity):
-    def __init__(self):
-        super().__init__(SCREEN_WIDTH / 2, SCREEN_HEIGHT - 180, 120, 120, arcade.color.PURPLE)
-        self.max_health = 260
+    def __init__(self, variant: str = "western"):
+        size = 102 if variant == "meatball" else 126
+        super().__init__(SCREEN_WIDTH / 2, SCREEN_HEIGHT - 180, size, size, arcade.color.PURPLE)
+        self.variant = variant
+        self.max_health = 180 if variant == "meatball" else 320
         self.health = self.max_health
-        self.speed = 1.6
-        self.touch_damage = 16
+        self.speed = 1.45 if variant == "meatball" else 1.75
+        self.touch_damage = 12 if variant == "meatball" else 18
+        self.projectile_cooldown = 0.0
+
+
+class Projectile(Entity):
+    def __init__(self, x: float, y: float, dx: float, dy: float, speed: float, damage: int, color: arcade.Color):
+        super().__init__(x, y, 12, 12, color)
+        self.dx = dx
+        self.dy = dy
+        self.speed = speed
+        self.damage = damage
+        self.life = 3.0
 
 
 class GameView(arcade.View):
@@ -288,6 +421,8 @@ class GameView(arcade.View):
         self.state = "intro"
         self.player = Player(160, 160)
         self.enemies: list[Enemy] = []
+        self.enemy_projectiles: list[Projectile] = []
+        self.boss_projectiles: list[Projectile] = []
         self.boss = Boss()
         self.pressed_keys: set[int] = set()
         self.mouse_x = self.player.x
@@ -300,6 +435,7 @@ class GameView(arcade.View):
         self.lunge_dash_timer = 0.0
         self.lunge_dash_dx = 0.0
         self.lunge_dash_dy = 0.0
+        self._last_delta_time = 1 / 60
         self.damage_flash = 0.0
         self.screen_shake = 0.0
         self.current_message = "Press ENTER to start the climb."
@@ -323,18 +459,47 @@ class GameView(arcade.View):
         self.microplastics_effect_title = ""
         self.microplastics_effect_body = ""
         self._last_microplastics_stage = self.player.microplastics_stage
+        self.player_textures = self.load_player_textures()
+        self.enemy_textures = self.load_textures(ENEMY_TEXTURE_FILES)
+        self.boss_textures = self.load_textures(BOSS_TEXTURE_FILES)
+        self.floor_texture = self.load_textures({"floor": "images/floor.PNG"}).get("floor")
 
     def on_show_view(self) -> None:
         arcade.set_background_color(BACKGROUND)
 
+    def load_player_textures(self) -> dict[str, arcade.Texture]:
+        return self.load_textures(PLAYER_TEXTURE_FILES)
+
+    def load_textures(self, mapping: dict[str, str]) -> dict[str, arcade.Texture]:
+        textures: dict[str, arcade.Texture] = {}
+        for key, path in mapping.items():
+            try:
+                textures[key] = arcade.load_texture(path)
+            except Exception:
+                continue
+        return textures
+
     def spawn_floor(self) -> None:
         self.floor_loot = []
+        self.enemy_projectiles = []
+        self.boss_projectiles = []
         if self.player.floor % 4 == 0:
             self.state = "boss"
-            self.boss = Boss()
+            if self.player.floor % 8 == 0:
+                boss_variant = "robo"
+            elif self.player.floor % 8 == 4:
+                boss_variant = "meatball"
+            else:
+                boss_variant = "western"
+            self.boss = Boss(boss_variant)
             self.boss.x = SCREEN_WIDTH / 2
             self.boss.y = SCREEN_HEIGHT - 160
-            self.current_message = "The CEO appears."
+            if boss_variant == "meatball":
+                self.current_message = "A meatball prototype rolls in as a mini boss."
+            elif boss_variant == "robo":
+                self.current_message = "The robo boss powers up and starts firing projectiles."
+            else:
+                self.current_message = "The western boss rides in as the CEO's final form."
             return
         self.enemies = []
         for _ in range(2 + self.player.floor):
@@ -489,7 +654,7 @@ class GameView(arcade.View):
                 self.equip_from_inventory(3)
             elif key in {arcade.key.KEY_5, arcade.key.NUM_5}:
                 self.equip_from_inventory(4)
-            elif key in {arcade.key.SPACE, arcade.key.ENTER, arcade.key.I}:
+            elif key in {arcade.key.ENTER, arcade.key.I}:
                 # close inventory and continue
                 self.player.refresh_stats()
                 if self.enemies:
@@ -503,7 +668,7 @@ class GameView(arcade.View):
         if self.state in {"combat", "boss"} and key == arcade.key.SPACE:
             if self.player.attack_timer <= 0:
                 self.attack()
-        if self.state in {"combat", "boss"} and key in {arcade.key.Q, arcade.key.E}:
+        if self.state in {"combat", "boss"} and key in {arcade.key.Q, arcade.key.E, arcade.key.R, arcade.key.T, arcade.key.Y}:
             self.special_attack(key)
 
         # allow quick inventory open
@@ -551,9 +716,16 @@ class GameView(arcade.View):
         attack_box = self.attack_rect()
         targets = self.enemies if self.state == "combat" else [self.boss]
         hit = False
+        damage = self.player.effective_damage
+        if self.player.equipped_weapon and self.player.equipped_weapon.weapon_style == "sweep":
+            damage += 2
+        if self.player.equipped_weapon and self.player.equipped_weapon.weapon_style == "lunge":
+            damage += 2
+        if self.player.equipped_weapon and self.player.equipped_weapon.weapon_style == "pierce":
+            damage += 1
         for target in list(targets):
             if self.rects_intersect(attack_box, self.entity_hitbox(target, 0.0)):
-                self.damage_target(target, self.player.effective_damage)
+                self.damage_target(target, damage)
                 hit = True
         if hit:
             self.screen_shake = 0.08
@@ -562,12 +734,16 @@ class GameView(arcade.View):
 
     def special_attack(self, key: int) -> None:
         if self.special_attack_timer > 0:
+            self.current_message = f"Special on cooldown: {self.special_attack_timer:.1f}s left."
             return
         weapon_style = self.player.equipped_weapon.weapon_style if self.player.equipped_weapon else ""
         has_sweep = weapon_style == "sweep"
         has_lunge = weapon_style == "lunge"
+        has_pierce = weapon_style == "pierce"
+        has_slam = weapon_style == "slam"
+        has_pulse = weapon_style == "pulse"
         if key == arcade.key.Q and has_sweep:
-            self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.special_attack_timer = SWEEP_SPECIAL_COOLDOWN
             self.special_attack_effect = "sweep"
             self.special_attack_effect_timer = 0.45
             self.current_message = f"Sweep attack with {self.player.equipped_weapon.name}!"
@@ -582,8 +758,13 @@ class GameView(arcade.View):
             aim_len = math.hypot(aim_x, aim_y) or 1.0
             aim_x /= aim_len
             aim_y /= aim_len
-            SWEEP_RANGE = 148
-            SWEEP_ANGLE_DEG = 132
+            SWEEP_RANGE = 220
+            SWEEP_ANGLE_DEG = 180
+            sweep_damage = max(1, self.player.effective_damage - 1)
+            if self.player.legendary_armor_ability == "cool":
+                SWEEP_RANGE += 24
+                SWEEP_ANGLE_DEG += 10
+                sweep_damage += 2
             cos_thresh = math.cos(math.radians(SWEEP_ANGLE_DEG / 2))
             for target in list(targets):
                 dx = target.x - self.player.x
@@ -594,15 +775,16 @@ class GameView(arcade.View):
                     target_box = self.entity_hitbox(target, 0.0)
                     target_radius = max(target_box[1] - target_box[0], target_box[3] - target_box[2]) * 0.5
                     if dot >= cos_thresh - 0.08 and dist <= SWEEP_RANGE + target_radius * 0.45:
-                        self.damage_target(target, self.player.effective_damage + 6)
+                        self.damage_target(target, sweep_damage)
                         hit = True
             if hit:
                 self.screen_shake = 0.1
             return
         if key == arcade.key.E and has_lunge:
-            self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.special_attack_timer = LUNGE_SPECIAL_COOLDOWN
             self.special_attack_effect = "lunge"
             self.special_attack_effect_timer = 0.26
+            self.player.invuln_timer = 1.0
             self.current_message = f"Lunge strike with {self.player.equipped_weapon.name}!"
             # Lunge toward the pointer
             aim_x = self.mouse_x - self.player.x
@@ -620,14 +802,88 @@ class GameView(arcade.View):
             self.player.facing_x = float(sign(self.lunge_dash_dx))
             self.player.facing_y = float(sign(self.lunge_dash_dy))
             self.lunge_dash_timer = LUNGE_DASH_TIME
+            start_x = self.player.x
+            start_y = self.player.y
+            end_x = start_x + self.lunge_dash_dx * LUNGE_DASH_DISTANCE
+            end_y = start_y + self.lunge_dash_dy * LUNGE_DASH_DISTANCE
             self.player.x += self.lunge_dash_dx * LUNGE_DASH_DISTANCE * 0.35
             self.player.y += self.lunge_dash_dy * LUNGE_DASH_DISTANCE * 0.35
             targets = self.enemies if self.state == "combat" else [self.boss]
             hit = False
-            lunge_box = self.attack_rect()
+            lunge_damage = self.player.effective_damage + 8
+            if self.player.legendary_armor_ability == "winter":
+                lunge_damage += 2
             for target in list(targets):
-                if self.rects_intersect(lunge_box, self.entity_hitbox(target, 0.0)):
-                    self.damage_target(target, self.player.effective_damage + 10)
+                target_box = self.entity_hitbox(target, 0.0)
+                target_cx = (target_box[0] + target_box[1]) / 2
+                target_cy = (target_box[2] + target_box[3]) / 2
+                target_radius = max(target_box[1] - target_box[0], target_box[3] - target_box[2]) * 0.5
+                if self.distance_point_to_segment(target_cx, target_cy, start_x, start_y, end_x, end_y) <= target_radius + 48:
+                    self.damage_target(target, lunge_damage)
+                    hit = True
+            if hit:
+                self.screen_shake = 0.1
+            return
+        if key == arcade.key.R and has_pierce:
+            self.special_attack_timer = 3.15
+            self.special_attack_effect = "pierce"
+            self.special_attack_effect_timer = 0.32
+            self.current_message = f"Pierce attack with {self.player.equipped_weapon.name}!"
+            targets = self.enemies if self.state == "combat" else [self.boss]
+            hit = False
+            aim_x = self.mouse_x - self.player.x
+            aim_y = self.mouse_y - self.player.y
+            if abs(aim_x) < 1e-3 and abs(aim_y) < 1e-3:
+                aim_x = self.player.facing_x
+                aim_y = self.player.facing_y
+            aim_len = math.hypot(aim_x, aim_y) or 1.0
+            aim_x /= aim_len
+            aim_y /= aim_len
+            self.player.facing_x = aim_x
+            self.player.facing_y = aim_y
+            for target in list(targets):
+                dx = target.x - self.player.x
+                dy = target.y - self.player.y
+                dist = math.hypot(dx, dy)
+                if dist <= 260:
+                    dot = (dx * aim_x + dy * aim_y) / (dist or 1.0)
+                    if dot > 0.72:
+                        self.damage_target(target, self.player.effective_damage + 4)
+                        hit = True
+            if hit:
+                self.screen_shake = 0.08
+            return
+        if key == arcade.key.T and has_slam:
+            self.special_attack_timer = SLAM_SPECIAL_COOLDOWN
+            self.special_attack_effect = "slam"
+            self.special_attack_effect_timer = 0.36
+            self.current_message = f"Slam attack with {self.player.equipped_weapon.name}!"
+            targets = self.enemies if self.state == "combat" else [self.boss]
+            hit = False
+            slam_damage = self.player.effective_damage + 6
+            for target in list(targets):
+                dx = target.x - self.player.x
+                dy = target.y - self.player.y
+                if math.hypot(dx, dy) <= 170:
+                    self.damage_target(target, slam_damage)
+                    self.stun_enemy(target)
+                    hit = True
+            if hit:
+                self.screen_shake = 0.14
+            return
+        if key == arcade.key.Y and has_pulse:
+            self.special_attack_timer = PULSE_SPECIAL_COOLDOWN
+            self.special_attack_effect = "pulse"
+            self.special_attack_effect_timer = 0.4
+            self.current_message = f"Pulse attack with {self.player.equipped_weapon.name}!"
+            targets = self.enemies if self.state == "combat" else [self.boss]
+            hit = False
+            for target in list(targets):
+                dx = target.x - self.player.x
+                dy = target.y - self.player.y
+                dist = math.hypot(dx, dy)
+                if dist <= 210:
+                    self.damage_target(target, max(1, self.player.effective_damage + 2))
                     hit = True
             if hit:
                 self.screen_shake = 0.1
@@ -665,6 +921,25 @@ class GameView(arcade.View):
         xs = [point[0] for point in corners]
         ys = [point[1] for point in corners]
         return min(xs), max(xs), min(ys), max(ys)
+
+    def distance_point_to_segment(
+        self,
+        px: float,
+        py: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> float:
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0 and dy == 0:
+            return math.hypot(px - x1, py - y1)
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+        return math.hypot(px - closest_x, py - closest_y)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float) -> None:
         self.mouse_x = x
@@ -729,9 +1004,14 @@ class GameView(arcade.View):
         target.x = max(40, min(SCREEN_WIDTH - 40, target.x))
         target.y = max(40, min(SCREEN_HEIGHT - 40, target.y))
 
+    def stun_enemy(self, target: Entity, duration: float = SLAM_STUN_TIME) -> None:
+        if isinstance(target, Enemy):
+            target.stun_timer = max(target.stun_timer, duration)
+
     def on_update(self, delta_time: float) -> None:
         if self.state == "game_over":
             return
+        self._last_delta_time = delta_time
 
         if self.player.attack_timer > 0:
             self.player.attack_timer -= delta_time
@@ -795,18 +1075,52 @@ class GameView(arcade.View):
             self.update_boss()
             if self.boss.health <= 0:
                 self.finish_floor(boss=True)
+        self.update_projectiles(delta_time)
 
     def finish_floor(self, boss: bool = False) -> None:
-        drops = [self.generate_drop(self.player.floor, boss=boss) for _ in range(2)]
-        self.player.inventory.extend(drops)
+        all_loot = [self.generate_drop(self.player.floor, boss=boss)]
+        self.floor_loot = []
+        self.player.inventory.extend(all_loot)
+        for drop in all_loot:
+            self.player.apply_pickup_visuals(drop)
         self.player.money += 8 + self.player.floor * 2
         self.player.floor += 1
         self.player.refresh_stats()
-        message = f"Floor cleared. Found {drops[0].name} and {drops[1].name}. Open inventory (I)."
+        message = f"Floor cleared. Loot moved to inventory. Open inventory (I)."
         self.open_inventory(message)
 
     def generate_drop(self, floor: int, boss: bool = False) -> Item:
-        typ = random.choice(["weapon", "armor"])
+        special_roll = random.random()
+        legendary_chance = 0.025 if not boss else 0.06
+        if special_roll < legendary_chance:
+            return Item(
+                name="Legendary Cool Jacket",
+                type="armor",
+                description="A stylish upcycled jacket that makes the whole build feel cooler.",
+                damage_bonus=6,
+                defense_bonus=6,
+                max_health_bonus=24,
+                sustainability=9,
+                rarity="legendary",
+                legendary_ability="cool",
+                color=arcade.color.DEEP_SKY_BLUE,
+            )
+        if special_roll < legendary_chance * 2:
+            return Item(
+                name="Legendary Winter Coat",
+                type="armor",
+                description="Warm layered protection that gives the hero a winter look.",
+                damage_bonus=0,
+                defense_bonus=12,
+                max_health_bonus=42,
+                sustainability=6,
+                rarity="legendary",
+                legendary_ability="winter",
+                color=arcade.color.LIGHT_BLUE,
+            )
+
+        # Bias drops more toward armor so the appearance-changing gear shows up more often.
+        typ = random.choices(["weapon", "armor"], weights=[30, 70], k=1)[0]
         level = max(1, floor // 2)
         if boss:
             level += 2
@@ -845,32 +1159,21 @@ class GameView(arcade.View):
     def draw_ui(self) -> None:
         arcade.draw_lrbt_rectangle_filled(18, 420, SCREEN_HEIGHT - 150, SCREEN_HEIGHT - 18, PANEL)
         self.draw_text_with_shadow(f"Health: {self.player.health}/{self.player.max_health}", 30, SCREEN_HEIGHT - 56, TEXT, 16)
-        self.draw_text_with_shadow(f"Money: {self.player.money}", 30, SCREEN_HEIGHT - 82, TEXT, 16)
-        self.draw_text_with_shadow(f"Floor: {self.player.floor}", 30, SCREEN_HEIGHT - 108, TEXT, 16)
+        self.draw_text_with_shadow(f"Floor: {self.player.floor}", 30, SCREEN_HEIGHT - 82, TEXT, 16)
         stat_text = (
             f"Damage: {self.player.effective_damage}  Speed: {self.player.effective_speed}  "
-            f"Defense: {self.player.defense}  Sustainability: {self.player.sustainability}"
+            f"Defense: {self.player.defense}"
         )
         self.draw_text_with_shadow(
             stat_text,
             30,
-            SCREEN_HEIGHT - 134,
+            SCREEN_HEIGHT - 108,
             MUTED,
             self.fit_font_size(stat_text, 350, 11),
             350,
         )
-        stage = self.player.microplastics_stage
-        stage_text = ["Clean", "Dirty", "Toxic", "Critical"][stage]
-        stage_desc = [
-            "Clean: stable and low-risk.",
-            "Dirty: buildup is starting to weigh you down.",
-            "Toxic: movement and damage are getting rough.",
-            "Critical: the suit is breaking your body down.",
-        ][stage]
-        micro_text = f"Microplastics: {int(self.player.microplastics)}/100  Stage: {stage_text}"
-        self.draw_text_with_shadow(micro_text, 30, SCREEN_HEIGHT - 152, MUTED, self.fit_font_size(micro_text, 350, 11), 350)
         bar_left = 30
-        bar_bottom = SCREEN_HEIGHT - 176
+        bar_bottom = SCREEN_HEIGHT - 140
         bar_width = 320
         bar_height = 16
         fill_width = bar_width * (self.player.microplastics / MALAISE_MAX)
@@ -885,8 +1188,6 @@ class GameView(arcade.View):
         for tick in (25, 50, 75):
             x = bar_left + bar_width * (tick / MALAISE_MAX)
             arcade.draw_line(x, bar_bottom, x, bar_bottom + bar_height, arcade.color.WHITE, 1)
-        self.draw_text_with_shadow("Lower is better", bar_left + 2, bar_bottom - 16, MUTED, 10)
-        self.draw_wrapped_text(stage_desc, bar_left, bar_bottom - 32, MUTED, 10, 320)
         if self.microplastics_effect_timer > 0:
             effect_y = bar_bottom + 26
             effect_title_size = self.fit_font_size(self.microplastics_effect_title, 320, 12)
@@ -901,19 +1202,52 @@ class GameView(arcade.View):
             objective = "Manage inventory"
         else:
             objective = "Clear the floor"
-        self.draw_wrapped_text(objective, SCREEN_WIDTH - 232, SCREEN_HEIGHT - 82, MUTED, 13, 200)
+        self.draw_wrapped_text(objective, SCREEN_WIDTH - 232, SCREEN_HEIGHT - 72, MUTED, 13, 200)
         self.draw_text_with_shadow("Move: arrows or WASD", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 108, MUTED, 11, 200)
         self.draw_wrapped_text("Attack: SPACE (aim with mouse)", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 126, MUTED, 11, 200)
         weapon_style = self.player.equipped_weapon.weapon_style if self.player.equipped_weapon else ""
+        ability_label = ""
+        ability_cooldown = 0.0
         if weapon_style == "sweep":
-            self.draw_text_with_shadow("Q: Sweep (weapon)", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 144, MUTED, 11, 200)
+            ability_label = "Q: Sweep"
+            ability_cooldown = SWEEP_SPECIAL_COOLDOWN
         elif weapon_style == "lunge":
-            self.draw_text_with_shadow("E: Lunge (weapon)", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 144, MUTED, 11, 200)
+            ability_label = "E: Lunge"
+            ability_cooldown = LUNGE_SPECIAL_COOLDOWN
+        elif weapon_style == "pierce":
+            ability_label = "R: Pierce"
+            ability_cooldown = 1.15
+        elif weapon_style == "slam":
+            ability_label = "T: Slam"
+            ability_cooldown = SLAM_SPECIAL_COOLDOWN
+        elif weapon_style == "pulse":
+            ability_label = "Y: Pulse"
+            ability_cooldown = PULSE_SPECIAL_COOLDOWN
         else:
-            self.draw_text_with_shadow("Equip a special weapon", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 144, MUTED, 11, 200)
+            ability_label = "Equip a special weapon"
+        self.draw_text_with_shadow(ability_label, SCREEN_WIDTH - 232, SCREEN_HEIGHT - 144, MUTED, 11, 200)
+        if self.player.equipped_weapon:
+            if self.special_attack_timer > 0:
+                self.draw_text_with_shadow(
+                    f"Cooldown: {self.special_attack_timer:.1f}s / {ability_cooldown:.1f}s",
+                    SCREEN_WIDTH - 232,
+                    SCREEN_HEIGHT - 160,
+                    arcade.color.ORANGE,
+                    11,
+                    200,
+                )
+            else:
+                self.draw_text_with_shadow(
+                    "Cooldown: ready",
+                    SCREEN_WIDTH - 232,
+                    SCREEN_HEIGHT - 160,
+                    MUTED,
+                    11,
+                    200,
+                )
         if self.state == "inventory":
             self.draw_wrapped_text("Click or press 1-9 to swap gear", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 154, MUTED, 11, 200)
-            self.draw_text_with_shadow("I or SPACE to close", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 172, MUTED, 11, 200)
+            self.draw_text_with_shadow("I or ENTER to close", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 186, MUTED, 11, 200)
 
     def update_microplastics(self, delta_time: float) -> None:
         if self.state == "inventory":
@@ -922,9 +1256,9 @@ class GameView(arcade.View):
         previous_stage = self.player.microplastics_stage
         sustainability = self.player.sustainability
         if sustainability < 0:
-            self.player.microplastics += ((-sustainability) ** 0.85) * MALAISE_GAIN_RATE * 0.35 * delta_time
+            self.player.microplastics += ((-sustainability) ** 0.85) * MALAISE_GAIN_RATE * 0.4 * delta_time
         elif sustainability > 0:
-            self.player.microplastics -= sustainability * MALAISE_RECOVERY_RATE * 0.9 * delta_time
+            self.player.microplastics -= sustainability * MALAISE_RECOVERY_RATE * 0.75 * delta_time
         self.player.microplastics -= MALAISE_PASSIVE_RECOVERY * delta_time
         self.player.microplastics = max(0.0, min(MALAISE_MAX, self.player.microplastics))
         new_stage = self.player.microplastics_stage
@@ -953,7 +1287,34 @@ class GameView(arcade.View):
 
     def update_enemies(self) -> None:
         for enemy in self.enemies[:]:
-            self.move_toward(enemy, self.player, enemy.speed)
+            if enemy.stun_timer > 0:
+                enemy.stun_timer = max(0.0, enemy.stun_timer - self._last_delta_time)
+                enemy.x += math.sin(enemy.stun_timer * 40.0) * 0.7
+                enemy.y += math.cos(enemy.stun_timer * 36.0) * 0.7
+            elif enemy.variant == "slime":
+                enemy.ai_timer -= self._last_delta_time
+                if enemy.ai_state == "idle":
+                    if enemy.ai_timer <= 0:
+                        enemy.ai_state = "leap"
+                        enemy.ai_timer = 0.28
+                elif enemy.ai_state == "leap":
+                    dx = self.player.x - enemy.x
+                    dy = self.player.y - enemy.y
+                    dist = math.hypot(dx, dy) or 1.0
+                    leap_speed = enemy.speed * 14.0
+                    enemy.x += dx / dist * leap_speed
+                    enemy.y += dy / dist * leap_speed
+                    if enemy.ai_timer <= 0:
+                        enemy.ai_state = "recover"
+                        enemy.ai_timer = 1.0
+                else:
+                    if enemy.ai_timer <= 0:
+                        enemy.ai_state = "idle"
+                        enemy.ai_timer = random.uniform(0.9, 1.7)
+            else:
+                self.move_toward(enemy, self.player, enemy.speed)
+            if enemy.variant == "zombie_orange" and random.random() < 0.015:
+                self.enemy_projectiles.append(self.make_projectile_toward(enemy, self.player, 220, 6, arcade.color.ORANGE_RED))
             if self.rects_intersect(self.entity_hitbox(enemy, ENEMY_TOUCH_PADDING), self.entity_hitbox(self.player, 3)):
                 self.hit_player(enemy.touch_damage)
             if enemy.health <= 0:
@@ -961,18 +1322,45 @@ class GameView(arcade.View):
                 self.player.money += 5
                 self.player.microplastics = max(0.0, self.player.microplastics - MALAISE_KILL_RECOVERY)
                 self.current_message = "Enemy down. Microplastics dropped."
-                # generate an item drop for this enemy and stash to floor loot
-                drop = self.generate_drop(self.player.floor)
-                self.floor_loot.append(drop)
-                # also give a small chance for immediate equip if inventory small
-                if len(self.player.inventory) < 6 and random.random() < 0.25:
-                    self.player.inventory.append(drop)
-                    self.current_message = f"Found {drop.name} and added to inventory."
 
     def update_boss(self) -> None:
         self.move_toward(self.boss, self.player, self.boss.speed)
+        if self.boss.variant == "robo":
+            self.boss.projectile_cooldown -= self._last_delta_time
+            if self.boss.projectile_cooldown <= 0:
+                self.boss.projectile_cooldown = 1.1
+                self.fire_boss_projectile()
         if self.rects_intersect(self.boss_hitbox(4), self.entity_hitbox(self.player, 3)):
             self.hit_player(self.boss.touch_damage)
+
+    def fire_boss_projectile(self) -> None:
+        dx = self.player.x - self.boss.x
+        dy = self.player.y - self.boss.y
+        dist = math.hypot(dx, dy) or 1.0
+        self.boss_projectiles.append(
+            Projectile(self.boss.x, self.boss.y, dx / dist, dy / dist, 240, 14, arcade.color.CYAN)
+        )
+
+    def make_projectile_toward(self, source: Entity, target: Entity, speed: float, damage: int, color: arcade.Color) -> Projectile:
+        dx = target.x - source.x
+        dy = target.y - source.y
+        dist = math.hypot(dx, dy) or 1.0
+        return Projectile(source.x, source.y, dx / dist, dy / dist, speed, damage, color)
+
+    def update_projectiles(self, delta_time: float) -> None:
+        for projectile_list in (self.enemy_projectiles, self.boss_projectiles):
+            for projectile in projectile_list[:]:
+                projectile.x += projectile.dx * projectile.speed * delta_time
+                projectile.y += projectile.dy * projectile.speed * delta_time
+                projectile.life -= delta_time
+                if projectile.life <= 0:
+                    projectile_list.remove(projectile)
+                    continue
+                if self.rects_intersect(self.entity_hitbox(projectile, 0), self.entity_hitbox(self.player, 2)):
+                    self.hit_player(projectile.damage)
+                    if projectile in projectile_list:
+                        projectile_list.remove(projectile)
+
 
     def move_toward(self, mover: Entity, target: Entity, speed: float) -> None:
         dx = target.x - mover.x
@@ -987,9 +1375,12 @@ class GameView(arcade.View):
         if self.player.invuln_timer > 0:
             return
         malaise_penalty = int(self.player.microplastics // 25)
-        damage = max(1, incoming - self.player.defense + malaise_penalty)
+        bonus_reduction = 2 if self.player.legendary_armor_ability == "winter" else 0
+        damage = max(1, incoming - self.player.defense - bonus_reduction + malaise_penalty)
         self.player.health -= damage
-        self.player.microplastics = min(MALAISE_MAX, self.player.microplastics + damage * 1.7)
+        # Enemy contact should build microplastics gradually so it feels like a long-term pressure.
+        microplastics_gain = max(MALAISE_HIT_MINIMUM, damage * MALAISE_HIT_MULTIPLIER)
+        self.player.microplastics = min(MALAISE_MAX, self.player.microplastics + microplastics_gain)
         self.player.invuln_timer = 0.6
         self.damage_flash = 0.18
         # smaller, controlled damage indicator (no giant red circle)
@@ -1016,6 +1407,7 @@ class GameView(arcade.View):
             self.player.inventory.pop(idx)
             self.current_message = f"Equipped {item.name} as armor."
         self.player.refresh_stats()
+        self.player.update_visual_theme_from_equipment()
 
     def clear_drag_state(self) -> None:
         self.dragged_item_index = None
@@ -1130,6 +1522,7 @@ class GameView(arcade.View):
             self.player.equipped_armor = item
             self.current_message = f"Equipped {item.name} as armor."
         self.player.refresh_stats()
+        self.player.update_visual_theme_from_equipment()
 
     def move_equipped_item_between_slots(self, from_slot: str, to_slot: str) -> None:
         source_item = self.player.equipped_weapon if from_slot == "weapon" else self.player.equipped_armor
@@ -1146,6 +1539,7 @@ class GameView(arcade.View):
             self.player.equipped_armor = source_item
         self.current_message = f"Moved {source_item.name} to {to_slot}."
         self.player.refresh_stats()
+        self.player.update_visual_theme_from_equipment()
 
     def on_draw(self) -> None:
         self.clear()
@@ -1160,25 +1554,68 @@ class GameView(arcade.View):
         self.draw_messages()
 
         if self.state == "intro":
-            self.draw_center_panel("Hunter & Ollin", "Use arrow keys or WASD to move. Click to aim. Press SPACE to attack. Press ENTER to start.")
+            self.draw_center_panel(
+                "Hunter & Ollin",
+                "Use arrow keys or WASD to move. Click to aim. Press SPACE to attack. Different weapons can unlock special abilities, and the keybinds in the top right show how to use them. The more microplastics you build up, the stronger the negative effects become. Press ENTER to start.",
+            )
         elif self.state == "game_over":
             self.draw_center_panel("Game Over", "Press R to restart.")
         elif self.state == "inventory":
-            self.draw_center_panel("Inventory", "Drag items to the weapon or armor slot. Close with I or SPACE.")
             self.draw_inventory_menu()
             self.draw_inventory_tooltip()
 
     def draw_building(self, shake_x: int, shake_y: int) -> None:
-        arcade.draw_lrbt_rectangle_filled(180 + shake_x, SCREEN_WIDTH - 180 + shake_x, 40 + shake_y, SCREEN_HEIGHT - 40 + shake_y, arcade.color.DARK_BROWN)
-        arcade.draw_lrbt_rectangle_outline(180 + shake_x, SCREEN_WIDTH - 180 + shake_x, 40 + shake_y, SCREEN_HEIGHT - 40 + shake_y, arcade.color.BLACK_OLIVE, 4)
-        for floor_y in range(110, SCREEN_HEIGHT - 50, 110):
-            arcade.draw_line(180 + shake_x, floor_y + shake_y, SCREEN_WIDTH - 180 + shake_x, floor_y + shake_y, arcade.color.BLACK_OLIVE, 3)
-        for window_y in range(80, SCREEN_HEIGHT - 80, 110):
-            for window_x in range(230, SCREEN_WIDTH - 220, 150):
-                lit = (window_x + window_y) % 3 != 0
-                color = arcade.color.GOLD if lit else arcade.color.DARK_SLATE_GRAY
-                arcade.draw_lbwh_rectangle_filled(window_x - 13 + shake_x, window_y - 17 + shake_y, 26, 34, color)
-                arcade.draw_lbwh_rectangle_outline(window_x - 13 + shake_x, window_y - 17 + shake_y, 26, 34, arcade.color.BLACK, 1)
+        left = 0 + shake_x
+        right = SCREEN_WIDTH + shake_x
+        bottom = 0 + shake_y
+        top = SCREEN_HEIGHT + shake_y
+        if self.floor_texture:
+            rect = arcade.Rect(
+                left,
+                right,
+                bottom,
+                top,
+                SCREEN_WIDTH,
+                SCREEN_HEIGHT,
+                SCREEN_WIDTH / 2 + shake_x,
+                SCREEN_HEIGHT / 2 + shake_y,
+            )
+            draw_texture = getattr(arcade, "draw_texture_rect", None)
+            draw_scaled_texture = getattr(arcade, "draw_scaled_texture_rectangle", None)
+            if draw_texture is not None:
+                try:
+                    draw_texture(self.floor_texture, rect)
+                except TypeError:
+                    try:
+                        draw_texture(self.floor_texture, rect)
+                    except TypeError:
+                        if draw_scaled_texture is not None:
+                            draw_scaled_texture(
+                                SCREEN_WIDTH / 2 + shake_x,
+                                SCREEN_HEIGHT / 2 + shake_y,
+                                self.floor_texture,
+                                SCREEN_WIDTH,
+                                SCREEN_HEIGHT,
+                                90,
+                            )
+                        else:
+                            draw_texture(rect, self.floor_texture)
+            else:
+                if draw_scaled_texture is not None:
+                    draw_scaled_texture(
+                        SCREEN_WIDTH / 2 + shake_x,
+                        SCREEN_HEIGHT / 2 + shake_y,
+                        self.floor_texture,
+                        SCREEN_WIDTH,
+                        SCREEN_HEIGHT,
+                        90,
+                    )
+                else:
+                    arcade.draw_lrbt_rectangle_filled(left, right, bottom, top, arcade.color.DARK_BROWN)
+            overlay = (0, 0, 0, 35)
+            arcade.draw_lrbt_rectangle_filled(left, right, bottom, top, overlay)
+        else:
+            arcade.draw_lrbt_rectangle_filled(left, right, bottom, top, arcade.color.DARK_BROWN)
 
     def draw_background(self) -> None:
         for i, y in enumerate((40, 120, 200, 280, 360, 440, 520, 600)):
@@ -1194,12 +1631,18 @@ class GameView(arcade.View):
         self.draw_player(shake_x, shake_y)
         for enemy in self.enemies:
             self.draw_enemy(enemy, shake_x, shake_y)
+        self.draw_projectiles(shake_x, shake_y)
         if self.state == "boss":
             self.draw_boss(shake_x, shake_y)
         if self.punch_timer > 0:
             self.draw_punch(shake_x, shake_y)
         if self.special_attack_effect_timer > 0:
             self.draw_special_attack_effect(shake_x, shake_y)
+
+    def draw_projectiles(self, shake_x: int, shake_y: int) -> None:
+        for projectile in self.enemy_projectiles + self.boss_projectiles:
+            arcade.draw_circle_filled(projectile.x + shake_x, projectile.y + shake_y, 6, projectile.color)
+            arcade.draw_circle_outline(projectile.x + shake_x, projectile.y + shake_y, 6, arcade.color.BLACK, 1)
     def draw_punch(self, shake_x: int, shake_y: int) -> None:
         progress = 1.0 - max(0.0, self.punch_timer) / PUNCH_ANIMATION_TIME
         reach = 18 + progress * 38
@@ -1276,27 +1719,67 @@ class GameView(arcade.View):
                 end_y - facing_x * 14 - facing_y * 8,
                 arcade.color.WHITE,
             )
+        elif self.special_attack_effect == "pierce":
+            end_x = self.player.x + self.player.facing_x * 180 + shake_x
+            end_y = self.player.y + self.player.facing_y * 180 + shake_y
+            arcade.draw_line(self.player.x + shake_x, self.player.y + shake_y, end_x, end_y, arcade.color.CYAN, 8)
+        elif self.special_attack_effect == "slam":
+            arcade.draw_circle_outline(self.player.x + shake_x, self.player.y + shake_y, 78, arcade.color.ORANGE, 5)
+        elif self.special_attack_effect == "pulse":
+            arcade.draw_circle_outline(self.player.x + shake_x, self.player.y + shake_y, 112, arcade.color.TURQUOISE, 4)
 
     def draw_health_bar(self, entity: Entity, shake_x: int, shake_y: int, bar_color: arcade.Color = arcade.color.LIME_GREEN) -> None:
         health_ratio = max(0, entity.health) / entity.max_health
         left = entity.x - entity.width / 2 + shake_x
-        bottom = entity.y + entity.height / 2 + 10 + shake_y
+        bottom = entity.y + entity.height / 2 + 16 + shake_y
         arcade.draw_lbwh_rectangle_filled(left, bottom, entity.width, 6, arcade.color.DARK_RED)
         arcade.draw_lbwh_rectangle_filled(left, bottom, entity.width * health_ratio, 6, bar_color)
 
     def draw_player(self, shake_x: int, shake_y: int) -> None:
         x = self.player.x + shake_x
         y = self.player.y + shake_y
-        body_color = arcade.color.AQUA if self.player.microplastics_stage == 0 else arcade.color.TURQUOISE
-        arcade.draw_ellipse_filled(x, y, self.player.width + 6, self.player.height + 4, arcade.color.BLACK_OLIVE)
-        arcade.draw_lbwh_rectangle_filled(x - self.player.width / 2, y - self.player.height / 2, self.player.width, self.player.height, body_color)
-        arcade.draw_triangle_filled(x, y + 10, x - 18, y + 24, x + 18, y + 24, arcade.color.LIGHT_GRAY)
-        arcade.draw_circle_filled(x - 8, y + 14, 3, arcade.color.BLACK)
-        arcade.draw_circle_filled(x + 8, y + 14, 3, arcade.color.BLACK)
-        if self.player.facing_x != 0 or self.player.facing_y != 0:
-            fx = self.player.facing_x
-            fy = self.player.facing_y
-            arcade.draw_line(x, y + 4, x + fx * 22, y + 4 + fy * 22, arcade.color.WHITE, 3)
+        texture = self.player_textures.get(self.player.visual_theme) or self.player_textures.get("default")
+        if texture is not None:
+            draw_rect = getattr(arcade, "draw_texture_rect", None)
+            if draw_rect is not None:
+                tex_width = self.player.width * 2.4
+                tex_height = self.player.height * 2.4
+                rect = arcade.Rect(
+                    x - tex_width / 2,
+                    x + tex_width / 2,
+                    y - tex_height / 2,
+                    y + tex_height / 2,
+                    tex_width,
+                    tex_height,
+                    x,
+                    y,
+                )
+                try:
+                    draw_rect(texture, rect)
+                except TypeError:
+                    draw_rect(rect, texture)
+            else:
+                body_color = arcade.color.AQUA if self.player.microplastics_stage == 0 else arcade.color.TURQUOISE
+                arcade.draw_ellipse_filled(x, y, self.player.width + 6, self.player.height + 4, arcade.color.BLACK_OLIVE)
+                arcade.draw_lbwh_rectangle_filled(x - self.player.width / 2, y - self.player.height / 2, self.player.width, self.player.height, body_color)
+                arcade.draw_triangle_filled(x, y + 10, x - 18, y + 24, x + 18, y + 24, arcade.color.LIGHT_GRAY)
+                arcade.draw_circle_filled(x - 8, y + 14, 3, arcade.color.BLACK)
+                arcade.draw_circle_filled(x + 8, y + 14, 3, arcade.color.BLACK)
+                if self.player.facing_x != 0 or self.player.facing_y != 0:
+                    fx = self.player.facing_x
+                    fy = self.player.facing_y
+                    arcade.draw_line(x, y + 4, x + fx * 22, y + 4 + fy * 22, arcade.color.WHITE, 3)
+        else:
+            body_color = arcade.color.AQUA if self.player.microplastics_stage == 0 else arcade.color.TURQUOISE
+            arcade.draw_ellipse_filled(x, y, self.player.width + 6, self.player.height + 4, arcade.color.BLACK_OLIVE)
+            arcade.draw_lbwh_rectangle_filled(x - self.player.width / 2, y - self.player.height / 2, self.player.width, self.player.height, body_color)
+            arcade.draw_triangle_filled(x, y + 10, x - 18, y + 24, x + 18, y + 24, arcade.color.LIGHT_GRAY)
+            arcade.draw_circle_filled(x - 8, y + 14, 3, arcade.color.BLACK)
+            arcade.draw_circle_filled(x + 8, y + 14, 3, arcade.color.BLACK)
+            if self.player.facing_x != 0 or self.player.facing_y != 0:
+                fx = self.player.facing_x
+                fy = self.player.facing_y
+                arcade.draw_line(x, y + 4, x + fx * 22, y + 4 + fy * 22, arcade.color.WHITE, 3)
         if self.player.microplastics_stage > 0:
             glow = 2 + self.player.microplastics_stage
             arcade.draw_circle_outline(x, y, 28 + self.player.microplastics_stage * 3, arcade.color.ORANGE_RED, glow)
@@ -1312,25 +1795,62 @@ class GameView(arcade.View):
     def draw_enemy(self, entity: Enemy, shake_x: int, shake_y: int) -> None:
         x = entity.x + shake_x
         y = entity.y + shake_y
-        arcade.draw_circle_filled(x, y, entity.width * 0.58, arcade.color.BLACK_OLIVE)
-        arcade.draw_lbwh_rectangle_filled(x - entity.width / 2, y - entity.height / 2, entity.width, entity.height, entity.color)
-        arcade.draw_triangle_filled(x - 6, y + 10, x - 18, y + 22, x + 2, y + 18, arcade.color.GOLD)
-        arcade.draw_triangle_filled(x + 6, y + 10, x + 18, y + 22, x - 2, y + 18, arcade.color.GOLD)
-        arcade.draw_circle_filled(x - 7, y + 2, 3, arcade.color.WHITE)
-        arcade.draw_circle_filled(x + 7, y + 2, 3, arcade.color.WHITE)
-        arcade.draw_line(x - 8, y - 11, x + 8, y - 11, arcade.color.BLACK, 2)
+        if entity.stun_timer > 0:
+            x += math.sin(entity.stun_timer * 40.0) * 2.0
+            y += math.cos(entity.stun_timer * 36.0) * 2.0
+        texture = self.enemy_textures.get(getattr(entity, "variant", ""))
+        if texture is not None and hasattr(arcade, "draw_texture_rect"):
+            rect = arcade.Rect(
+                x - entity.width,
+                x + entity.width,
+                y - entity.height,
+                y + entity.height,
+                entity.width * 2,
+                entity.height * 2,
+                x,
+                y,
+            )
+            try:
+                arcade.draw_texture_rect(texture, rect)
+            except TypeError:
+                arcade.draw_texture_rect(rect, texture)
+        else:
+            arcade.draw_circle_filled(x, y, entity.width * 0.58, arcade.color.BLACK_OLIVE)
+            arcade.draw_lbwh_rectangle_filled(x - entity.width / 2, y - entity.height / 2, entity.width, entity.height, entity.color)
+            arcade.draw_triangle_filled(x - 6, y + 10, x - 18, y + 22, x + 2, y + 18, arcade.color.GOLD)
+            arcade.draw_triangle_filled(x + 6, y + 10, x + 18, y + 22, x - 2, y + 18, arcade.color.GOLD)
+            arcade.draw_circle_filled(x - 7, y + 2, 3, arcade.color.WHITE)
+            arcade.draw_circle_filled(x + 7, y + 2, 3, arcade.color.WHITE)
+            arcade.draw_line(x - 8, y - 11, x + 8, y - 11, arcade.color.BLACK, 2)
         self.draw_health_bar(entity, shake_x, shake_y)
 
     def draw_boss(self, shake_x: int, shake_y: int) -> None:
         x = self.boss.x + shake_x
         y = self.boss.y + shake_y
-        arcade.draw_circle_filled(x, y, 66, arcade.color.BLACK_OLIVE)
-        arcade.draw_lbwh_rectangle_filled(x - self.boss.width / 2, y - self.boss.height / 2, self.boss.width, self.boss.height, arcade.color.PURPLE)
-        arcade.draw_lbwh_rectangle_filled(x - 36, y - 43, 72, 74, arcade.color.DARK_SLATE_BLUE)
-        arcade.draw_triangle_filled(x, y + 36, x - 30, y + 10, x + 30, y + 10, arcade.color.GOLD)
-        arcade.draw_circle_filled(x - 18, y + 14, 5, arcade.color.WHITE)
-        arcade.draw_circle_filled(x + 18, y + 14, 5, arcade.color.WHITE)
-        arcade.draw_line(x - 16, y - 18, x + 16, y - 18, arcade.color.BLACK, 3)
+        texture = self.boss_textures.get(getattr(self.boss, "variant", ""))
+        if texture is not None and hasattr(arcade, "draw_texture_rect"):
+            rect = arcade.Rect(
+                x - self.boss.width,
+                x + self.boss.width,
+                y - self.boss.height,
+                y + self.boss.height,
+                self.boss.width * 2.1,
+                self.boss.height * 2.1,
+                x,
+                y,
+            )
+            try:
+                arcade.draw_texture_rect(texture, rect)
+            except TypeError:
+                arcade.draw_texture_rect(rect, texture)
+        else:
+            arcade.draw_circle_filled(x, y, 66, arcade.color.BLACK_OLIVE)
+            arcade.draw_lbwh_rectangle_filled(x - self.boss.width / 2, y - self.boss.height / 2, self.boss.width, self.boss.height, arcade.color.PURPLE)
+            arcade.draw_lbwh_rectangle_filled(x - 36, y - 43, 72, 74, arcade.color.DARK_SLATE_BLUE)
+            arcade.draw_triangle_filled(x, y + 36, x - 30, y + 10, x + 30, y + 10, arcade.color.GOLD)
+            arcade.draw_circle_filled(x - 18, y + 14, 5, arcade.color.WHITE)
+            arcade.draw_circle_filled(x + 18, y + 14, 5, arcade.color.WHITE)
+            arcade.draw_line(x - 16, y - 18, x + 16, y - 18, arcade.color.BLACK, 3)
         self.draw_health_bar(self.boss, shake_x, shake_y, arcade.color.ORANGE)
 
     def draw_messages(self) -> None:
@@ -1352,7 +1872,7 @@ class GameView(arcade.View):
         panel_height = 360
         arcade.draw_lbwh_rectangle_filled(panel_left, panel_bottom, panel_width, panel_height, arcade.color.DARK_BLUE_GRAY)
         arcade.draw_lbwh_rectangle_outline(panel_left, panel_bottom, panel_width, panel_height, arcade.color.WHITE, 3)
-        self.draw_text_with_shadow("Inventory", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 128, TEXT, 26, anchor_x="center")
+        self.draw_text_with_shadow("Inventory", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 146, TEXT, 26, anchor_x="center")
         self.inv_bounds = []
         self.inventory_slots = []
         self.equipment_slots = {}
@@ -1363,8 +1883,8 @@ class GameView(arcade.View):
         ew = self.player.equipped_weapon
         ea = self.player.equipped_armor
         weapon_slot = (eq_left, eq_left + 290, eq_top - 46, eq_top - 2)
-        armor_slot = (eq_left, eq_left + 290, eq_top - 138, eq_top - 94)
-        trash_slot = (eq_left, eq_left + 290, eq_top - 248, eq_top - 204)
+        armor_slot = (eq_left, eq_left + 290, eq_top - 144, eq_top - 100)
+        trash_slot = (eq_left, eq_left + 290, eq_top - 254, eq_top - 210)
         self.equipment_slots["weapon"] = weapon_slot
         self.equipment_slots["armor"] = armor_slot
         self.trash_slot = trash_slot
@@ -1375,23 +1895,19 @@ class GameView(arcade.View):
         trash_left, trash_right, trash_bottom, trash_top = trash_slot
         trash_highlight = arcade.color.RED if self.is_point_in_drag_hover(trash_left, trash_right, trash_bottom, trash_top) else arcade.color.DARK_RED
         arcade.draw_lbwh_rectangle_outline(trash_left, trash_bottom, trash_right - trash_left, trash_top - trash_bottom, trash_highlight, 2)
-        self.draw_text_with_shadow("Weapon slot", weapon_slot[0] + 10, weapon_slot[2] + 12, TEXT, 11)
-        self.draw_text_with_shadow("Drag weapon here", weapon_slot[0] + 10, weapon_slot[2] + 26, MUTED, 8)
         self.draw_text_with_shadow("W", weapon_slot[0] + 274, weapon_slot[2] + 11, arcade.color.CYAN, 16, anchor_x="center")
+        self.draw_text_with_shadow("Drag weapon here", weapon_slot[0] + 10, weapon_slot[2] + 30, MUTED, 8)
         if ew:
-            self.draw_fitted_text(self.compact_label(ew.name, 26), weapon_slot[0] + 10, weapon_slot[2] + 5, arcade.color.WHITE, 228, 11, 8)
-            self.draw_wrapped_text(ew.summary, weapon_slot[0] + 10, weapon_slot[2] - 10, MUTED, 8, 228)
+            self.draw_fitted_text(self.compact_label(ew.name, 26), weapon_slot[0] + 10, weapon_slot[2] + 10, arcade.color.WHITE, 228, 11, 8)
         else:
-            self.draw_text_with_shadow("Empty", weapon_slot[0] + 10, weapon_slot[2] + 5, arcade.color.GRAY, 10)
-        self.draw_text_with_shadow("Armor slot", armor_slot[0] + 10, armor_slot[2] + 12, TEXT, 11)
-        self.draw_text_with_shadow("Drag armor here", armor_slot[0] + 10, armor_slot[2] + 26, MUTED, 8)
+            self.draw_text_with_shadow("Empty", weapon_slot[0] + 10, weapon_slot[2] + 2, arcade.color.GRAY, 10)
         self.draw_text_with_shadow("A", armor_slot[0] + 274, armor_slot[2] + 11, arcade.color.ORANGE, 16, anchor_x="center")
+        self.draw_text_with_shadow("Drag armor here", armor_slot[0] + 10, armor_slot[2] + 30, MUTED, 8)
         if ea:
-            self.draw_fitted_text(self.compact_label(ea.name, 26), armor_slot[0] + 10, armor_slot[2] + 5, arcade.color.WHITE, 228, 11, 8)
-            self.draw_wrapped_text(ea.summary, armor_slot[0] + 10, armor_slot[2] - 10, MUTED, 8, 228)
+            self.draw_fitted_text(self.compact_label(ea.name, 26), armor_slot[0] + 10, armor_slot[2] + 10, arcade.color.WHITE, 228, 11, 8)
         else:
-            self.draw_text_with_shadow("Empty", armor_slot[0] + 10, armor_slot[2] + 5, arcade.color.GRAY, 10)
-        self.draw_text_with_shadow("Trash slot", trash_left + 10, trash_top - 20, arcade.color.RED, 11)
+            self.draw_text_with_shadow("Empty", armor_slot[0] + 10, armor_slot[2] + 2, arcade.color.GRAY, 10)
+        self.draw_text_with_shadow("Trash slot", trash_left + 10, trash_top - 18, arcade.color.RED, 11)
         self.draw_text_with_shadow("Drop unwanted items here", trash_left + 10, trash_top - 34, MUTED, 8)
         self.draw_text_with_shadow("TRASH", trash_left + 272, trash_bottom + 11, arcade.color.RED, 14, anchor_x="center")
 
@@ -1404,12 +1920,11 @@ class GameView(arcade.View):
         grid_width = grid_right - grid_left
         grid_height = grid_top - grid_bottom
         cell_gap_x = 10
-        cell_gap_y = 10
+        cell_gap_y = 20
         cell_size = min(
             (grid_width - (cols - 1) * cell_gap_x) / cols,
             (grid_height - (rows - 1) * cell_gap_y) / rows,
         )
-        self.draw_text_with_shadow("Inventory", grid_left, grid_top + 18, MUTED, 11)
         for slot_idx in range(cols * rows):
             row = slot_idx // cols
             col = slot_idx % cols
@@ -1428,22 +1943,8 @@ class GameView(arcade.View):
                 arcade.draw_circle_filled(center_x, center_y, 16, item.color)
                 name_width = cell_size - 24
                 name_size = self.fit_font_size(item.name, name_width, 9, 7)
-                summary_text = item.summary or item.description or ""
-                summary_width = cell_size - 24
-                summary_size = self.fit_font_size(summary_text, summary_width, 7, 6)
-                self.draw_fitted_text(self.compact_label(item.name, 22), left + 12, bottom + cell_size * 0.30, TEXT, name_width, name_size, 7)
-                self.draw_fitted_text(item.type_label, left + 12, top - 16, item.type_color, name_width, 7, 6)
-                self.draw_fitted_text(f"Rtg {item.rating}", left + 12, bottom + 12, arcade.color.WHITE, name_width, 7, 6)
-                if summary_text:
-                    self.draw_wrapped_text(
-                        self.compact_label(summary_text, 40),
-                        left + 12,
-                        bottom + 23,
-                        MUTED,
-                        summary_size,
-                        summary_width,
-                    )
-                self.draw_text_with_shadow(str(slot_idx + 1), right - 13, bottom + 8, arcade.color.WHITE, 8, anchor_x="center")
+                self.draw_fitted_text(self.compact_label(item.name, 20), left + 12, bottom + cell_size * 0.32, TEXT, name_width, name_size, 7)
+                self.draw_text_with_shadow(str(slot_idx + 1), right - 13, bottom + 10, arcade.color.WHITE, 8, anchor_x="center")
         if len(self.player.inventory) > cols * rows:
             self.draw_text_with_shadow("Inventory full, extra drops are hidden.", grid_left, panel_bottom + 14, arcade.color.GOLD, 10)
         if self.inventory_dragging and self.dragged_item_label:
@@ -1459,7 +1960,7 @@ class GameView(arcade.View):
             arcade.draw_lbwh_rectangle_outline(drag_x - 250, drag_y - 16, 500, 32, arcade.color.BLACK, 2)
             label = self.compact_label(self.dragged_item_label, 30)
             if active_item:
-                label = f"{active_item.type_label} Rtg {active_item.rating} | {label}"
+                label = f"{active_item.type_label} | {label}"
             self.draw_wrapped_text(label, drag_x - 234, drag_y - 4, arcade.color.BLACK, 10, 450)
 
     def draw_inventory_tooltip(self) -> None:
@@ -1474,7 +1975,7 @@ class GameView(arcade.View):
         body_width = width - padding * 2
         title_size = 15
         body_size = 11
-        line_gap = 4
+        line_gap = 8
         summary_lines = max(1, math.ceil(len(item.summary) / max(1, int(body_width / max(1, body_size * 0.58))))) if item.summary else 1
         desc_text = item.description or "No description."
         desc_lines = max(1, math.ceil(len(desc_text) / max(1, int(body_width / max(1, body_size * 0.58)))))

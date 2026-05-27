@@ -4,7 +4,7 @@
 
 # Your Game Title Here
 
-**Group Members:** [List all group member names here]
+**Group Members:** Hunter and Ollin
 
 ## Description
 

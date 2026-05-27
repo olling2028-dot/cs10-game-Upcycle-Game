@@ -27,7 +27,8 @@ ATTACK_DAMAGE = 18
 ATTACK_BOX_LENGTH = 84
 ATTACK_BOX_WIDTH = 56
 PUNCH_ANIMATION_TIME = 0.1
-SPECIAL_ATTACK_COOLDOWN = 0.58
+SWEEP_SPECIAL_COOLDOWN = 2.58
+LUNGE_SPECIAL_COOLDOWN = 0.32
 LUNGE_DASH_DISTANCE = 88
 LUNGE_DASH_TIME = 0.14
 BASE_PLAYER_MAX_HEALTH = 120
@@ -385,7 +386,7 @@ class GameView(arcade.View):
         if self.special_attack_timer > 0:
             return
         if key == arcade.key.Q and "sweep" in self.player.unlocked_attacks:
-            self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.special_attack_timer = SWEEP_SPECIAL_COOLDOWN
             self.special_attack_effect = "sweep"
             self.special_attack_effect_timer = 0.24
             self.current_message = "Sweep attack!"
@@ -405,7 +406,7 @@ class GameView(arcade.View):
                 self.screen_shake = 0.1
             return
         if key == arcade.key.E and "lunge" in self.player.unlocked_attacks:
-            self.special_attack_timer = SPECIAL_ATTACK_COOLDOWN
+            self.special_attack_timer = LUNGE_SPECIAL_COOLDOWN
             self.special_attack_effect = "lunge"
             self.special_attack_effect_timer = 0.26
             self.current_message = "Lunge strike!"
@@ -698,7 +699,7 @@ class GameView(arcade.View):
         self.draw_messages()
 
         if self.state == "intro":
-            self.draw_center_panel("Hunter & Ollin", "Use arrow keys or WASD to move. Click to aim; press SPACE to attack. Press ENTER to start.")
+            self.draw_center_panel("Hunter & Ollin", "Use arrow keys or WASD to move. Click to aim; press SPACE to attack. The more microplastics you build up, the stronger the negative effects become. Press ENTER to start.")
         elif self.state == "reward":
             self.draw_reward_menu()
         elif self.state == "game_over":
@@ -846,17 +847,8 @@ class GameView(arcade.View):
             MUTED,
             12,
         )
-        stage = self.player.microplastics_stage
-        stage_text = ["Clean", "Dirty", "Toxic", "Critical"][stage]
-        arcade.draw_text(
-            f"Microplastics: {int(self.player.microplastics)}/100  Stage: {stage_text}",
-            30,
-            SCREEN_HEIGHT - 152,
-            MUTED,
-            12,
-        )
         bar_left = 30
-        bar_bottom = SCREEN_HEIGHT - 176
+        bar_bottom = SCREEN_HEIGHT - 152
         bar_width = 320
         bar_height = 16
         fill_width = bar_width * (self.player.microplastics / MALAISE_MAX)
@@ -871,8 +863,6 @@ class GameView(arcade.View):
         for tick in (25, 50, 75):
             x = bar_left + bar_width * (tick / MALAISE_MAX)
             arcade.draw_line(x, bar_bottom, x, bar_bottom + bar_height, arcade.color.WHITE, 1)
-        arcade.draw_text("Lower is better", bar_left + 2, bar_bottom - 16, MUTED, 10)
-
         arcade.draw_lrbt_rectangle_filled(SCREEN_WIDTH - 250, SCREEN_WIDTH - 18, SCREEN_HEIGHT - 150, SCREEN_HEIGHT - 18, PANEL)
         arcade.draw_text("Objectives", SCREEN_WIDTH - 232, SCREEN_HEIGHT - 56, TEXT, 16)
         if self.state == "boss":
