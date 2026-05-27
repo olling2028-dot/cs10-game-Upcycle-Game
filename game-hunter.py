@@ -784,7 +784,7 @@ class GameView(arcade.View):
             self.special_attack_timer = LUNGE_SPECIAL_COOLDOWN
             self.special_attack_effect = "lunge"
             self.special_attack_effect_timer = 0.26
-            self.player.invuln_timer = 1.0
+            self.player.invuln_timer = 0.85
             self.current_message = f"Lunge strike with {self.player.equipped_weapon.name}!"
             # Lunge toward the pointer
             aim_x = self.mouse_x - self.player.x
@@ -1091,7 +1091,7 @@ class GameView(arcade.View):
 
     def generate_drop(self, floor: int, boss: bool = False) -> Item:
         special_roll = random.random()
-        legendary_chance = 0.025 if not boss else 0.06
+        legendary_chance = 0.022 if not boss else 0.055
         if special_roll < legendary_chance:
             return Item(
                 name="Legendary Cool Jacket",
@@ -1119,8 +1119,8 @@ class GameView(arcade.View):
                 color=arcade.color.LIGHT_BLUE,
             )
 
-        # Bias drops more toward armor so the appearance-changing gear shows up more often.
-        typ = random.choices(["weapon", "armor"], weights=[30, 70], k=1)[0]
+        # Keep weapon and armor drops evenly balanced.
+        typ = random.choice(["weapon", "armor"])
         level = max(1, floor // 2)
         if boss:
             level += 2
