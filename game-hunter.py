@@ -1555,7 +1555,7 @@ class GameView(arcade.View):
 
         if self.state == "intro":
             self.draw_center_panel(
-                "Hunter & Ollin",
+                "INTO THE FASHEON by hunter and ollin",
                 "Use arrow keys or WASD to move. Click to aim. Press SPACE to attack. Different weapons can unlock special abilities, and the keybinds in the top right show how to use them. The more microplastics you build up, the stronger the negative effects become. Press ENTER to start.",
             )
         elif self.state == "game_over":

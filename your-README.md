@@ -12,8 +12,8 @@ This is a fast-paced action game where you fight your way through powerful fast 
 
 ## Screenshots
 
-[Add 2-3 screenshots of your game in action here. You can embed images using:
-`![Screenshot description](path/to/screenshot.png)`]
+i added screenshots but they're files because i cant figure out how to add them :(
+`![Screenshot description](path/to/screenshot.png)`
 
 ## How to Install & Play
 

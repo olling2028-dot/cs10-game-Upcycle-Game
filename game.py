@@ -699,7 +699,7 @@ class GameView(arcade.View):
         self.draw_messages()
 
         if self.state == "intro":
-            self.draw_center_panel("Hunter & Ollin", "Use arrow keys or WASD to move. Click to aim; press SPACE to attack. The more microplastics you build up, the stronger the negative effects become. Press ENTER to start.")
+            self.draw_center_panel("INTO THE FASHEON by hunter and ollin", "Use arrow keys or WASD to move. Click to aim; press SPACE to attack. The more microplastics you build up, the stronger the negative effects become. Press ENTER to start.")
         elif self.state == "reward":
             self.draw_reward_menu()
         elif self.state == "game_over":
