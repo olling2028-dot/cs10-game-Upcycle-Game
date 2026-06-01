@@ -9,7 +9,6 @@ if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
 
 pyinstaller --noconfirm --clean --onefile --windowed --name "UpcycleGame" `
     --add-data "images;images" `
-    --add-data "requirements.txt;." `
     launch_game.pyw
 
 Write-Host "Build complete. Find the executable in .\dist\UpcycleGame.exe"
