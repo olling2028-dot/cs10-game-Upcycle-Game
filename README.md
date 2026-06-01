@@ -14,10 +14,10 @@ i added screenshots but they're files because i cant figure out how to add them 
 
 ## How to Install & Play
 
-The easiest way to play is to download the zip from GitHub, unzip it, and double-click the included executable. No Python, Arcade, or VS Code install is needed.
+The easiest way to play is to download the standalone executable from GitHub and double-click it. No Python, Arcade, or VS Code install is needed.
 
 Windows:
-- Direct download: [UpcycleGame-Windows.zip](https://github.com/olling2028-dot/cs10-game-Upcycle-Game/releases/latest/download/UpcycleGame-Windows.zip)
+- Direct download: [UpcycleGame.exe](https://github.com/olling2028-dot/cs10-game-Upcycle-Game/releases/latest/download/UpcycleGame.exe)
 - Or build locally with `build_exe.ps1`
 
-If you want the game to launch from a link on the repo page, GitHub still cannot run a Python/Arcade desktop game directly in the browser without a full web rewrite. The downloaded zip is the desktop-friendly option.
+If you want the game to launch from a link on the repo page, GitHub still cannot run a Python/Arcade desktop game directly in the browser without a full web rewrite. The standalone `.exe` is the desktop-friendly option.

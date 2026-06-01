@@ -9,19 +9,19 @@ if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
 
 Remove-Item -Recurse -Force .\build, .\dist -ErrorAction SilentlyContinue
 
-pyinstaller --noconfirm --clean --onedir --windowed --name "UpcycleGame" `
-    --add-data "images;images" `
+pyinstaller --noconfirm --clean --onefile --windowed --name "UpcycleGame" `
+    --add-data "ignore\images;images" `
     launch_game.pyw
 
-$releaseDir = Join-Path $projectRoot "dist\UpcycleGame"
+$exePath = Join-Path $projectRoot "dist\UpcycleGame.exe"
 $zipPath = Join-Path $projectRoot "dist\UpcycleGame-Windows.zip"
 
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
 }
 
-Compress-Archive -Path "$releaseDir\*" -DestinationPath $zipPath
+Compress-Archive -Path $exePath -DestinationPath $zipPath
 
 Write-Host "Build complete."
-Write-Host "Folder: $releaseDir"
+Write-Host "Exe:    $exePath"
 Write-Host "Zip:    $zipPath"
